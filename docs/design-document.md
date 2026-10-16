@@ -52,9 +52,10 @@ Each stage is a pure function over a growing context struct where practical
 | **total** | | **≤ 1,800** | |
 
 Vendored libraries live in their own tree, fully separated from our code:
-`vendor/cjson/` (cJSON, MIT), `vendor/getopt/` (portable getopt, MIT),
-`vendor/greatest/` (greatest.h, CC0). Each gets `LICENSE`, version tag, and a
-provenance note; vendored files are never modified.
+`vendor/cjson/` (cJSON, MIT), `vendor/getopt/` (NetBSD getopt/getopt_long,
+BSD-2-Clause), `vendor/greatest/` (greatest.h, CC0). Each gets `LICENSE` and a
+version tag; `vendor/PROVENANCE.md` records sources and retrieval dates.
+Vendored files are never modified (portability shims are additive headers).
 
 ### 2.3 Data contracts between stages
 - Paths are `/`-normalized, relative to the pack root, from discovery onward.
@@ -68,7 +69,7 @@ provenance note; vendored files are never modified.
 |---|---|---|
 | D-01 | C standard: detect newest of C23 → C2x → C17 (MSVC: `/std:c23` → `/std:c17`); floor C17 = configure fatal | approved (TRS NFR-02) |
 | D-02 | JSON via vendored **cJSON** (single module: `cJSON.c/h`) for config + JSON output | **approved 2026-10-16** by user ("vendored single file") |
-| D-03 | argv via vendored **portable getopt** (MIT) | approved 2026-10-16 |
+| D-03 | argv via vendored **portable getopt**: NetBSD `getopt_long.c` (single file, BSD-2-Clause); musl rejected (depends on musl-internal headers) | approved 2026-10-16; impl chosen M1 |
 | D-04 | Ignore semantics **delegated to git**: `git ls-files -c -o --exclude-standard`; non-git fallback = walker skipping `.git/` + user globs. No gitignore parser of our own | **approved 2026-10-16** by user |
 | D-05 | Estimator = calibrated heuristic for v1; exact BPE tokenizer = post-v1, approval-gated | approved 2026-10-16 |
 | D-06 | Test harness = vendored greatest.h + CTest; goldens committed | approved (P2) |
@@ -85,6 +86,11 @@ Rationale highlights:
   still less correct than git itself).
 - **D-03 rejected**: own argv parser (~150 LOC reinvention; getopt semantics are the
   expected CLI contract). Integration tests remain ours regardless.
+- **D-03 impl**: NetBSD's single-file `getopt_long.c` (contains both `getopt` and
+  `getopt_long`) over musl's pair — musl includes internal headers (`libc.h`,
+  `syscall.h`) and would require modifying vendored code; NetBSD needs only
+  additive shims (`vendor/getopt/getopt_compat.h` + `compat/` + `msvc-compat/`,
+  force-included/scoped by CMake). Details: `vendor/PROVENANCE.md`.
 - **D-09**: `/MT` avoids VCRuntime redistributable — "one file, double-click it".
 
 ## 4. Key algorithms
@@ -213,11 +219,12 @@ packing, `--skip-unreadable`, shell completions, scoop/brew taps, unicode tree o
 Resolved 2026-10-16 (owner decisions):
 - D-03 vendored getopt — approved; D-05 heuristic estimator — approved;
   D-10 fail-fast I/O — approved; D-11 clip.exe clipboard — approved.
+- getopt impl (M1): NetBSD `getopt_long.c` vendored; musl rejected (internal
+  headers would force modifying vendored files).
 - Config discovery: walk up to git root; cwd-only fallback outside a work tree.
 - `--budget` unset = pack everything; report auto-fires whenever a budget is set.
 - Tree: plain ASCII from day one. `diff`: unstaged default + `--staged`.
 - `count --format json` stays in v1 (FR-011). License MIT. Name: **cctxpack**.
 
 Remaining open (implementation-time, no design impact):
-1. getopt implementation choice: musl-derived vs NetBSD (decide while vendoring, M1).
-2. Estimator formula α/β calibration and recorded MAE (M2, §4.6).
+1. Estimator formula α/β calibration and recorded MAE (M2, §4.6).
