@@ -1,17 +1,30 @@
+#include "cli.h"
+#include "pack.h"
+
 #include <stdio.h>
 #include <string.h>
 
-#ifndef CTX_VERSION
-#define CTX_VERSION "0.0.0-dev"
-#endif
-
 int main(int argc, char **argv)
 {
-    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
-        printf("cctxpack %s\n", CTX_VERSION);
-        return 0;
+    if (argc > 1) {
+        const char *cmd = argv[1];
+        if (strcmp(cmd, "count") == 0 || strcmp(cmd, "tree") == 0
+            || strcmp(cmd, "diff") == 0) {
+            fprintf(stderr,
+                "cctxpack: command '%s' is not implemented yet (planned M3)\n",
+                cmd);
+            return 2;
+        }
+        if (strcmp(cmd, "pack") == 0) {
+            for (int i = 2; i < argc; i++)
+                argv[i - 1] = argv[i];
+            argc--;
+        }
     }
-
-    fprintf(stderr, "usage: cctxpack <command> [paths...] (scaffold stub, see docs/)\n");
-    return argc > 1 ? 2 : 0;
+    pack_opts o;
+    memset(&o, 0, sizeof(o));
+    int exit_code = 0;
+    if (cli_parse(argc, argv, &o, &exit_code) == CLI_EXIT)
+        return exit_code;
+    return pack_run(&o);
 }

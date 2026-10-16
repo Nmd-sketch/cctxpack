@@ -31,6 +31,9 @@ message(STATUS "cctxpack: C standard flag: ${CTX_STD_FLAG}")
 
 if(MSVC)
     add_compile_options(/W4)
+    # C5105 is emitted from the Windows SDK's winbase.h when windows.h is
+    # included with a newer MSVC toolset; not actionable in our code.
+    add_compile_options(/wd5105)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
@@ -40,8 +43,43 @@ if(MINGW)
     add_link_options(-static)
 endif()
 
-add_executable(cctxpack src/main.c)
+function(ctx_enable_getopt target)
+    set(getopt_src ${CMAKE_SOURCE_DIR}/vendor/getopt/getopt_long.c)
+    set(getopt_compat ${CMAKE_SOURCE_DIR}/vendor/getopt/getopt_compat.h)
+    target_sources(${target} PRIVATE ${getopt_src})
+    target_compile_definitions(${target} PRIVATE REPLACE_GETOPT)
+    # Shim headers are scoped to the vendored TU only, so system headers
+    # (glibc's sys/cdefs.h, err.h) are never shadowed for our own code.
+    set_property(SOURCE ${getopt_src} APPEND PROPERTY
+        INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/vendor/getopt/compat)
+    if(MSVC)
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_SOURCE_DIR}/vendor/getopt/msvc-compat
+        )
+        set_property(SOURCE ${getopt_src} APPEND PROPERTY
+            INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/vendor/getopt/msvc-compat)
+        set_property(SOURCE ${getopt_src} APPEND PROPERTY
+            COMPILE_OPTIONS "/FI${getopt_compat}")
+    else()
+        set_property(SOURCE ${getopt_src} APPEND PROPERTY
+            COMPILE_OPTIONS "-include" "${getopt_compat}")
+    endif()
+endfunction()
+
+add_executable(cctxpack
+    src/main.c
+    src/cli.c
+    src/files.c
+    src/glob.c
+    src/read.c
+    src/tokens.c
+    src/pack.c
+    src/format.c
+    src/util.c
+)
+target_include_directories(cctxpack PRIVATE src)
 target_compile_definitions(cctxpack PRIVATE CTX_VERSION="${PROJECT_VERSION}")
+ctx_enable_getopt(cctxpack)
 
 enable_testing()
 
