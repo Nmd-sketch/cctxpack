@@ -232,11 +232,13 @@ TEST parse_tree_flag_sets_explicit(void)
  * falls back to a plain walk, so a probe can control every file it sees. */
 static char *tmp_scratch(const char *name)
 {
-    const char *t = getenv("TEMP");
+    const char *t = getenv("TMPDIR");
     if (!t || !t[0])
-        t = getenv("TMPDIR");
+        t = getenv("TMP");
     if (!t || !t[0])
-        return NULL;
+        t = getenv("TEMP");
+    if (!t || !t[0])
+        t = "/tmp";
     char joined[1024];
     snprintf(joined, sizeof(joined), "%s/cctxpack_%s", t, name);
     return path_abs(joined);
@@ -720,13 +722,14 @@ TEST e2e_diff_outside_worktree(void)
     char *err = scratch("e2e_err.txt");
     ASSERT(out && err);
     /* the OS temp dir is not inside any work tree we control */
-    char *tmp = getenv("TEMP");
+    const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0])
-        tmp = getenv("TMPDIR");
+        tmp = getenv("TMP");
     if (!tmp || !tmp[0])
-        SKIPm("no temp dir");
+        tmp = "/tmp";
     char *dir = path_abs(tmp);
-    ASSERT(dir != NULL);
+    if (!dir)
+        SKIPm("no temp dir");
     ASSERT_EQ(2, run_in(dir, "diff", out, err));
     free(dir);
     free(out);
