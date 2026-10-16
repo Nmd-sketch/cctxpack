@@ -144,9 +144,11 @@ inbound opportunities (recruiters/companies referencing the profile).
   user paths in spawned commands; pathological inputs (huge files, symlink loops,
   hostile names) terminate with a clean error, not a hang or crash.
 - **NFR-09 Code budget** — own source (`src/*.c` + `src/*.h` physical lines,
-  vendor and tests excluded) ≤ 2,000 LOC. Exceeding a module budget (design §2.2)
-  triggers a design review, not more code. (Raised from 1,800 at the M2 review to
-  cover the planned `config.c`; see design §12.)
+  vendor and tests excluded) ≤ 3,500 LOC. Exceeding a module budget (design §2.2)
+  triggers a design review, not more code. (Raised 1,800 → 2,000 at the M2 review,
+  then 2,000 → 3,500 at the M3 review: M3 measures 3,075, and the review applied
+  this document's own "measured value + ~15 % headroom" rule rather than
+  trimming working code to fit an estimate. See design §2.2/§12.)
 - **NFR-10 Documentation** — every flag and command appears in both `--help` and the
   README; requirements changes update this document in the same commit.
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0

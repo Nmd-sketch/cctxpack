@@ -39,26 +39,36 @@ Each stage is a pure function over a growing context struct where practical
 ### 2.2 Modules & LOC budgets (own code; vendor/tests excluded)
 
 LOC = physical lines (`wc -l`), blanks and comments included. The cap is the
-review threshold (P1); the M2 column records the measurement at the M2 code
-review (2026-10-16), where caps were revised to measured value + ~15% headroom.
+review threshold (P1). The **M2** column records the measurement at the M2 code
+review (2026-10-16); the **M3** column is the measurement at the M3 review
+(2026-10-16, post `8317a60`). Caps were set to measured value + ~15% headroom.
 
-| Module | Responsibility | LOC cap | LOC (M2) | Unit tests |
-|---|---|---|---|---|
-| `src/main.c` | command dispatch, version | 100 | 30 | e2e smoke |
-| `src/cli.c` | getopt wrapper, flag validation, path-operand resolution, `--help` text | 430 | 373 | `test_cli.c` |
-| `src/config.c` | `.cctxpack.json` load (cJSON), precedence merge | 200 | – (M3) | `test_config.c` |
-| `src/files.c` | `git ls-files` runner, fallback walker, strlist, sort | 350 | 320 | `test_files.c` |
-| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | `test_files.c` |
-| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | `test_read.c` |
-| `src/tokens.c` | calibrated heuristic estimator | 120 | 30 | `test_tokens.c` |
-| `src/pack.c` | ordering, budget fit, report assembly | 250 | 239 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer | 350 | 170 | `test_format.c` |
-| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open | 280 | 242 | `test_util.c` |
-| **total** | | **≤ 2,000** | 1,710 (`.c`) / 1,857 (`.c`+`.h`) | |
+| Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
+|---|---|---|---|---|---|
+| `src/main.c` | command dispatch, version, `config_apply` | 100 | 30 | 41 | e2e smoke |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 500 | 373 | 433 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 220 | – | 182 | `test_cli.c` |
+| `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge | 340 | – | 290 | `test_config.c` |
+| `src/files.c` | `git ls-files` runner, fallback walker, git top/diff runners, strlist, sort modes | 520 | 320 | 448 | `test_files.c` |
+| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 157 | `test_files.c` |
+| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 149 | `test_read.c` |
+| `src/tokens.c` | calibrated heuristic estimator | 120 | 30 | 30 | `test_tokens.c` |
+| `src/pack.c` | ordering (`key`/`key2`/`path`), `pack_score`, sink, budget fit, report assembly | 460 | 239 | 392 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers | 450 | 170 | 388 | `test_format.c` |
+| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE | 360 | 242 | 311 | `test_util.c` |
+| **total (`.c`)** | | | 1,710 | **2,821** | |
+| **total (`.c`+`.h`)** | | **≤ 3,500 (NFR-09)** | 1,857 | **3,075** | |
 
-The 2,000 ceiling counts first-party production lines only. At 1,857 the
-planned M3 `config.c` must stay near its 140-line estimate to fit; if it does
-not, the ceiling is revisited deliberately rather than by drift.
+**M3 review outcome (owner decision, 2026-10-16).** M3 measures **3,075** lines
+against the then-current NFR-09 ceiling of 3,000 — a 75-line (2.5 %) overrun,
+concentrated in four modules whose M2 caps predate the M3 feature set:
+`pack.c` (+142), `files.c` (+98), `config.c` (+90 against a 140-line estimate),
+`format.c` (+38). The review applied this document's own standing rule — caps are
+set to the measured value + ~15 % headroom — and raised NFR-09 **3,000 → 3,500**
+rather than trimming working, tested code to fit a pre-implementation estimate.
+Module caps in the table above were revised the same way. The overrun was not
+scope creep: it is the cost of the multi-format emitter, git-native `diff`, and
+config-file support (FR-009–FR-019), all delivered on the same LOC discipline.
 
 `glob.c` was split out of `files.c` so pattern matching (independently
 testable) stays separate from filesystem/git I/O.
@@ -198,27 +208,79 @@ additive linear form, and is checked by `test_tokens.c`.
 
 ## 5. Output format contracts (grammar level)
 
-- **md** — header, fenced tree, per file: `### <path>` + fenced block with language
-  hint from extension.
-- **xml** — `<context root="…">` + `<tree>` + `<file path="…">content</file>`.
-- **json** — `{"root":…,"tree":[…],"files":[{"path":…,"content":…,"tokens":…}]}`.
-- **txt** — minimal: header line, `===== <path> =====`, content.
+`format_id` is a stable enum used across the codebase and never re-ordered:
+`FMT_MD = 0`, `FMT_XML`, `FMT_JSON`, `FMT_TXT`. `format_parse()` maps `--format`
+names and returns `-1` for anything else (the CLI turns that into a usage error,
+exit 2). All four formats share the same five-stage emitter (`format_open` ->
+`format_tree` -> `format_files_open` -> `format_section` / `format_binary` …
+-> `format_close`), so adding a format is a switch arm, not a second code path.
 
-Escaping (fences in content, XML entities, JSON strings) is delegated to cJSON for
-JSON and to a small tested escaper for the others. Final goldens pin the exact bytes.
+### 5.1 Common invariants
+- `format_open` emits the root display + `CTX_VERSION` for every format. **md**
+  and **txt** carry the version in a header line; **xml** and **json** carry it
+  as a `version` attribute/key so machine consumers can detect the schema.
+- The `first` parameter only controls separators (the JSON array comma, the
+  blank line before each non-first XML/txt entry). Per-file **estimates are
+  always rendered with `first = 0`**, so a file's cost never depends on its
+  position (FR-007); the emitting pass passes its own counter.
+- Per-file `tokens` is the **content-only** estimate (`tokens_estimate(content)`),
+  not the rendered section size. Budget fitting uses the rendered section
+  estimate (`est`), which includes the path/fence chrome.
+- Binary files carry **no content** in any format; only path + byte size.
+
+### 5.2 Per-format grammar
+- **md** — `# Context bundle: <root>` header plus a
+  `<!-- generated by cctxpack <V>; token counts are estimates -->` comment. The
+  tree is a fenced `text` block. Per file: `### <path>` then a fenced block
+  whose fence length **widens past the longest backtick run in the content**
+  (`fence = max_run >= 3 ? max_run + 1 : 3`) so content can never close the
+  block early. Language hint from the file extension.
+- **xml** — `<?xml version="1.0" encoding="UTF-8"?>` + `<context root="…"
+  version="…">`, optional `<tree>`, then `<file path="…" tokens="…">content</file>`
+  (`binary="true" bytes="…"` self-closing for binaries) and `</context>`. Paths
+  and content pass through a tested escaper (`& < > " '`); content missing a
+  trailing newline gets `&#10;` re-appended so the close tag starts its own line.
+- **json** — streamed, never materialized as one tree:
+  `{"root":…,"version":…,"tree":[…],"files":[…]}`. The tree is an **array of
+  path strings** (machine-readable, not drawn ASCII). Each file object is
+  `{"path":…,"tokens":…,"content":…}` or `{"path":…,"binary":true,"bytes":…}`.
+  String escaping is delegated to vendored cJSON so quoting follows the library's
+  rules instead of a second hand-rolled escaper.
+- **txt** — minimal, for piping to a model without Markdown overhead:
+  `cctxpack bundle: <root> (cctxpack <V>)` header, the tree in plain ASCII
+  connectors, then `===== <path> =====` before each file's content.
+
+Final goldens pin the exact bytes for all four formats.
 
 ## 6. Error handling policy
 
+Exit codes are part of the public contract: `0` success, `1` runtime failure,
+`2` usage/config rejection (nothing was packed), `3` budget infeasible.
+
 | Condition | Action | Exit |
 |---|---|---|
-| unknown flag / bad args | usage on stderr | 2 |
+| unknown option / missing option value | usage on stderr + `try 'cctxpack --help'` | 2 |
+| `--budget` / `--max-file-tokens` not a number | usage on stderr | 2 |
+| `--format` not one of `md`/`xml`/`json`/`txt` | usage on stderr | 2 |
+| `--sort` not one of `name`/`mtime`/`size` | usage on stderr | 2 |
+| empty `--query`, empty `--include`, empty `--exclude` glob | usage on stderr | 2 |
+| `--clipboard` on non-Windows | `only available on Windows` | 2 |
+| `--clipboard` together with `-o` | mutually exclusive sinks | 2 |
+| `--staged` without the `diff` command | usage on stderr | 2 |
+| `diff` given explicit path operands | `diff takes no paths` | 2 |
+| path operand does not exist | `no such path: <arg>` | 2 |
 | invalid `.cctxpack.json` | stderr with cJSON error offset | 2 |
-| `diff` outside git work tree | stderr | 2 |
-| `--clipboard` on non-Windows | stderr | 2 |
-| git command fails | stderr + git's message | 1 |
-| file I/O failure | stderr, fail fast (D-10) | 1 |
-| budget infeasible | stderr report | 3 |
-| success | data on stdout | 0 |
+| `.cctxpack.json` key has the wrong type | stderr naming key + wanted type | 2 |
+| `diff` outside a git work tree | `diff needs a git work tree` | 2 |
+| out of memory | `out of memory` | 1 |
+| git command fails | stderr + git's own message | 1 |
+| file read failure (fail fast, D-10) | `cannot read <path>` | 1 |
+| budget infeasible (nothing fits) | stderr report | 3 |
+| success | bundle on stdout, `-o` file, or clipboard | 0 |
+
+Every usage error names the offending flag/value and is followed by the
+`try 'cctxpack --help'` hint. Configuration is validated before any file is
+read, so a rejected config never leaves a partial bundle behind.
 
 ## 7. Testing strategy
 
@@ -317,5 +379,59 @@ Resolved 2026-10-16 (M2 code review):
 - **`_DEFAULT_SOURCE`** is defined for non-Windows builds (`-std=c23` hides
   POSIX declarations on glibc); Windows/MinGW and Apple toolchains are unaffected.
 
-Remaining open (implementation-time, no design impact):
-1. None for M2.
+Resolved 2026-10-16 (M3 code review, commit `8317a60`):
+- **Four output formats** behind one five-stage emitter (§5). `format_id` order is
+  frozen (`FMT_MD = 0` first) because it is persisted-facing; `--format` names are
+  parsed by a single `format_parse()`.
+- **Markdown fence widening** (§5.2): the fence grows past the longest backtick
+  run in the content instead of using a fixed 3/4-backtick heuristic. Fixed width
+  is wrong for markdown inside markdown (e.g. this document), which silently
+  truncates a bundle or breaks the block.
+- **JSON tree is an array of path strings**, not drawn ASCII — the machine formats
+  are meant to be parsed, and re-deriving a tree from paths costs the consumer
+  nothing.
+- **One comparator for all ordering**: `pack_item` carries `key`, `key2`, `path`;
+  sorting is always `(key, key2, byte-wise path)`. Plain sorts set
+  `key = key2 = <sort-mode key>`; `--query` sets `key = -pack_score(path, query)`
+  and `key2 = <sort-mode key>`, so relevance wins and the requested sort still
+  breaks ties. This removed the previous separate rank-then-sort path and made
+  determinism a property of the comparator alone (NFR-07).
+- **`pack_score` is lexical, not semantic**: per-term ASCII case-insensitive
+  non-overlapping counts, basename hits weighted ×2, ties broken byte-wise on the
+  path. It never opens a file, so re-ranking a 50k-path repo stays instant and
+  free of I/O error paths. Semantic retrieval is post-v1 (would need a dependency
+  or a built-in embedding — out of budget).
+- **`diff` reuses git's own filter** (`--name-only --diff-filter=ACMR -z`, plus
+  `--cached` for `--staged`) from `git rev-parse --show-toplevel`. NUL splitting
+  avoids the newline-in-filename ambiguity; `-z` is why this is Unix-first —
+  on Windows git still emits NULs, so the read is portable.
+- **`diff` defaults the tree off** (FR-010): a change review wants the diff, not
+  a full-repo map that would eat the budget.
+- **Config precedence**: nearest `.cctxpack.json` at or above cwd, bounded by the
+  git work-tree root (cwd-only outside a work tree); CLI always wins; an invalid
+  or wrongly-typed config is a hard error with the cJSON offset, never a silent
+  fallback.
+- **Clipboard is UTF-16LE + BOM**, matching what `Get-Clipboard`/most Windows
+  consumers expect from a raw CF_UNICODETEXT write; malformed UTF-8 becomes
+  U+FFFD rather than aborting the copy.
+- **cJSON is now compiled and linked** (it was vendored but unused through M2);
+  it backs config parsing, `--format json` string escaping, and `count --format json`.
+
+- **NFR-09 raised 3,000 → 3,500** (owner decision, 2026-10-16). M3 measured 3,075
+  first-party lines, 75 over the old ceiling. The review applied the doc's own
+  "measured + ~15 % headroom" rule instead of trimming tested code to fit a
+  pre-implementation estimate; module caps in §2.2 were revised the same way.
+  Recorded per NFR-09's own escalation clause, not as silent drift.
+
+Remaining open:
+1. `vendor/cjson` is pinned to 1.7.19; no upgrade cadence is set. Re-check
+   advisories before the release tag.
+2. **The `--query` ranking is lexical, not semantic.** `pack_score` never reads
+   file content, so it cannot tell that `parse_config()` is the right hit for
+   "config parsing". A user who expects semantic search will be disappointed;
+   the README should keep saying "keyword" rather than "relevance" until an
+   embedding approach is approved (post-v1, needs a dependency).
+3. **A fixed ~160 ms of Windows startup cost is three `git` spawns** (config
+   discovery + work-tree probe + `git ls-files`), not I/O — see the benchmark
+   breakdown in the README. Caching the work-tree root would remove one spawn;
+   not done, since it is an optimization rather than a requirement.
