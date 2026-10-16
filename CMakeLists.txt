@@ -72,9 +72,24 @@ function(ctx_enable_getopt target)
     endif()
 endfunction()
 
+function(ctx_enable_cjson target)
+    target_sources(${target} PRIVATE ${CMAKE_SOURCE_DIR}/vendor/cjson/cJSON.c)
+    target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/vendor/cjson)
+    # Third-party TU: keep our own warning flags off it so the build log stays
+    # warning-free on every toolchain.
+    set(cjson_src ${CMAKE_SOURCE_DIR}/vendor/cjson/cJSON.c)
+    if(MSVC)
+        set_property(SOURCE ${cjson_src} APPEND PROPERTY COMPILE_OPTIONS /w)
+    else()
+        set_property(SOURCE ${cjson_src} APPEND PROPERTY COMPILE_OPTIONS -w)
+    endif()
+endfunction()
+
 add_executable(cctxpack
     src/main.c
     src/cli.c
+    src/config.c
+    src/cmd.c
     src/files.c
     src/glob.c
     src/read.c
@@ -86,6 +101,11 @@ add_executable(cctxpack
 target_include_directories(cctxpack PRIVATE src)
 target_compile_definitions(cctxpack PRIVATE CTX_VERSION="${PROJECT_VERSION}")
 ctx_enable_getopt(cctxpack)
+ctx_enable_cjson(cctxpack)
+
+if(NOT MSVC)
+    target_link_libraries(cctxpack PRIVATE m)
+endif()
 
 enable_testing()
 

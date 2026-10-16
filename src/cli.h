@@ -8,7 +8,9 @@ typedef enum {
     CLI_EXIT = 1
 } cli_action;
 
-cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code);
+/* `cmd` is the resolved subcommand name ("pack", "count", "tree" or "diff"). */
+cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
+    int *exit_code);
 void cli_help(void);
 
 #endif

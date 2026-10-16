@@ -6,9 +6,12 @@ add_executable(tests
     test_read.c
     test_tokens.c
     test_format.c
+    test_config.c
     test_pack.c
     test_cli.c
     ${CMAKE_SOURCE_DIR}/src/cli.c
+    ${CMAKE_SOURCE_DIR}/src/config.c
+    ${CMAKE_SOURCE_DIR}/src/cmd.c
     ${CMAKE_SOURCE_DIR}/src/files.c
     ${CMAKE_SOURCE_DIR}/src/glob.c
     ${CMAKE_SOURCE_DIR}/src/read.c
@@ -30,6 +33,10 @@ target_compile_definitions(tests PRIVATE
 )
 
 ctx_enable_getopt(tests)
+ctx_enable_cjson(tests)
+if(NOT MSVC)
+    target_link_libraries(tests PRIVATE m)
+endif()
 add_dependencies(tests cctxpack)
 
 add_test(NAME unit COMMAND tests)

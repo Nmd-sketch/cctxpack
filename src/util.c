@@ -240,3 +240,72 @@ FILE *path_open(const char *path, const char *mode)
     return fopen(path, mode);
 #endif
 }
+
+/* Next Unicode code point of a UTF-8 string; malformed bytes yield U+FFFD. */
+static unsigned int utf8_next(const char *s, size_t len, size_t *i)
+{
+    unsigned int cp;
+    size_t need;
+    unsigned char c = (unsigned char)s[*i];
+    if (c < 0x80) {
+        (*i)++;
+        return c;
+    }
+    if ((c & 0xE0) == 0xC0) {
+        cp = c & 0x1Fu;
+        need = 1;
+    } else if ((c & 0xF0) == 0xE0) {
+        cp = c & 0x0Fu;
+        need = 2;
+    } else if ((c & 0xF8) == 0xF0) {
+        cp = c & 0x07u;
+        need = 3;
+    } else {
+        (*i)++;
+        return 0xFFFD;
+    }
+    (*i)++;
+    for (size_t k = 0; k < need; k++) {
+        if (*i >= len || ((unsigned char)s[*i] & 0xC0) != 0x80)
+            return 0xFFFD;
+        cp = (cp << 6) | (unsigned int)((unsigned char)s[*i] & 0x3Fu);
+        (*i)++;
+    }
+    return cp;
+}
+
+/* clip.exe only treats its input as UTF-16LE when a BOM is present, so the
+ * encoding is what keeps non-ASCII paths and content intact on the clipboard.
+ * `*out_len` is the byte length excluding the terminator. */
+char *utf8_to_utf16le(const char *s, size_t len, size_t *out_len)
+{
+    size_t cap = 2 * len + 6;
+    unsigned char *out = malloc(cap);
+    if (!out)
+        return NULL;
+    size_t w = 0;
+    out[w++] = 0xFF;
+    out[w++] = 0xFE;
+    size_t i = 0;
+    unsigned int cp = utf8_next(s, len, &i);
+    while (1) {
+        if (cp >= 0x10000 && cp <= 0x10FFFF) {
+            unsigned int v = cp - 0x10000;
+            unsigned int hi = 0xD800 + (v >> 10);
+            unsigned int lo = 0xDC00 + (v & 0x3FF);
+            out[w++] = (unsigned char)(hi & 0xFF);
+            out[w++] = (unsigned char)(hi >> 8);
+            out[w++] = (unsigned char)(lo & 0xFF);
+            out[w++] = (unsigned char)(lo >> 8);
+        } else {
+            unsigned int u = cp > 0xFFFF ? 0xFFFD : cp;
+            out[w++] = (unsigned char)(u & 0xFF);
+            out[w++] = (unsigned char)(u >> 8);
+        }
+        if (i >= len)
+            break;
+        cp = utf8_next(s, len, &i);
+    }
+    *out_len = w;
+    return (char *)out;
+}

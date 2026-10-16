@@ -1,5 +1,7 @@
 #include "greatest.h"
 
+#include "cJSON.h"
+#include "format.h"
 #include "helpers.h"
 #include "pack.h"
 #include "tokens.h"
@@ -218,14 +220,129 @@ TEST pack_run_exclude_filter(void)
     PASS();
 }
 
+TEST pack_score_basics(void)
+{
+    ASSERT_EQ(0, (int)pack_score("src/main.c", ""));
+    ASSERT_EQ(0, (int)pack_score("src/main.c", "   "));
+    ASSERT_EQ(0, (int)pack_score("src/main.c", "zzz"));
+    /* a basename hit counts twice: two path hits + one basename hit */
+    ASSERT_EQ(3, (int)pack_score("main/main.c", "main"));
+    ASSERT_EQ(2, (int)pack_score("src/main.c", "MAIN"));
+    ASSERT_EQ(2, (int)pack_score("docs/guide.md", "guide"));
+    ASSERT_EQ(1, (int)pack_score("docs/guide.md", "docs"));
+    ASSERT_EQ(3, (int)pack_score("docs/guide.md", "docs guide"));
+    /* occurrences are counted non-overlapping, path and basename separately */
+    ASSERT_EQ(4, (int)pack_score("d/aaaa", "aa"));
+    PASS();
+}
+
+TEST pack_run_query_orders_hits_first(void)
+{
+    if (make_packtmp() != 0)
+        FAILm("cannot create ptmp");
+    pack_opts o;
+    pack_defaults(&o);
+    o.root = "ptmp";
+    o.root_display = "ptmp";
+    o.fake_ls = "a.txt\nb.md\nc.c\n";
+    o.query = "b";
+    o.output = "packq.md";
+    test_rm_rf("packq.md");
+    ASSERT_EQ(0, pack_run(&o));
+    char *b = test_read_all("packq.md", NULL);
+    ASSERT(b != NULL);
+    char *first = strstr(b, "### ");
+    ASSERT(first != NULL);
+    ASSERT(strncmp(first, "### b.md", 8) == 0);
+    free(b);
+    test_rm_rf("packq.md");
+    test_rm_rf("ptmp");
+    PASS();
+}
+
+TEST pack_run_sort_size_smallest_first(void)
+{
+    if (make_packtmp() != 0)
+        FAILm("cannot create ptmp");
+    pack_opts o;
+    pack_defaults(&o);
+    o.root = "ptmp";
+    o.root_display = "ptmp";
+    o.fake_ls = "a.txt\nb.md\nc.c\n";
+    o.sort = SORT_SIZE;
+    o.output = "packs.md";
+    test_rm_rf("packs.md");
+    ASSERT_EQ(0, pack_run(&o));
+    char *b = test_read_all("packs.md", NULL);
+    ASSERT(b != NULL);
+    char *c = strstr(b, "### c.c");
+    char *m = strstr(b, "### b.md");
+    char *a = strstr(b, "### a.txt");
+    ASSERT(c != NULL && m != NULL && a != NULL);
+    ASSERT(c < m);
+    ASSERT(m < a);
+    free(b);
+    test_rm_rf("packs.md");
+    test_rm_rf("ptmp");
+    PASS();
+}
+
+TEST pack_run_json_tokens_are_content_only(void)
+{
+    if (make_packtmp() != 0)
+        FAILm("cannot create ptmp");
+    pack_opts o;
+    pack_defaults(&o);
+    o.root = "ptmp";
+    o.root_display = "ptmp";
+    o.fake_ls = "a.txt\nb.md\nc.c\n";
+    o.format = FMT_JSON;
+    o.output = "packj.json";
+    test_rm_rf("packj.json");
+    ASSERT_EQ(0, pack_run(&o));
+    char *b = test_read_all("packj.json", NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON *files = cJSON_GetObjectItem(j, "files");
+    ASSERT(files != NULL);
+    ASSERT_EQ(3, cJSON_GetArraySize(files));
+    for (int i = 0; i < 3; i++) {
+        cJSON *f = cJSON_GetArrayItem(files, i);
+        const char *content = cJSON_GetObjectItem(f, "content")->valuestring;
+        ASSERT(content != NULL);
+        ASSERT_EQ((int)tokens_estimate(content, strlen(content)),
+            cJSON_GetObjectItem(f, "tokens")->valueint);
+    }
+    /* the same content-only numbers appear in the markdown bundle */
+    cJSON_Delete(j);
+    free(b);
+    o.format = FMT_MD;
+    o.output = "packj.md";
+    test_rm_rf("packj.md");
+    ASSERT_EQ(0, pack_run(&o));
+    b = test_read_all("packj.md", NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "### a.txt") != NULL);
+    free(b);
+    test_rm_rf("packj.json");
+    test_rm_rf("packj.md");
+    test_rm_rf("ptmp");
+    PASS();
+}
+
 SUITE(pack_suite)
 {
     RUN_TEST(fit_greedy_within_remaining);
     RUN_TEST(fit_nothing_fits);
     RUN_TEST(fit_random_invariant);
+    RUN_TEST(pack_score_basics);
     RUN_TEST(pack_run_budget_invariant);
     RUN_TEST(pack_run_tight_budget_fits_or_exits);
     RUN_TEST(pack_run_nothing_fits_exits_3);
     RUN_TEST(pack_run_no_budget_packs_all);
     RUN_TEST(pack_run_exclude_filter);
+    RUN_TEST(pack_run_query_orders_hits_first);
+    RUN_TEST(pack_run_sort_size_smallest_first);
+    RUN_TEST(pack_run_json_tokens_are_content_only);
 }

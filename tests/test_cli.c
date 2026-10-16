@@ -1,6 +1,8 @@
 #include "greatest.h"
 
+#include "cJSON.h"
 #include "cli.h"
+#include "format.h"
 #include "helpers.h"
 #include "pack.h"
 #include "tokens.h"
@@ -20,7 +22,7 @@ TEST parse_no_args_runs_pack(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(1, argv, &o, &code) == CLI_RUN);
+    ASSERT(cli_parse(1, argv, "pack", &o, &code) == CLI_RUN);
     ASSERT_STR_EQ(".", o.root);
     ASSERT(o.root_display != NULL && o.root_display[0] != '\0');
     ASSERT_EQ(1, o.want_tree);
@@ -34,12 +36,12 @@ TEST parse_help_and_version_exit_zero(void)
     pack_opts o;
     int code = -1;
     opts_reset(&o);
-    ASSERT(cli_parse(2, argv1, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(2, argv1, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(0, code);
 
     char *argv2[] = { "cctxpack", "--version" };
     code = -1;
-    ASSERT(cli_parse(2, argv2, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(2, argv2, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(0, code);
     PASS();
 }
@@ -50,7 +52,7 @@ TEST parse_unknown_flag_exits_2(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(2, argv, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(2, argv, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(2, code);
     PASS();
 }
@@ -61,12 +63,12 @@ TEST parse_bad_numbers_exit_2(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(3, argv1, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(3, argv1, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(2, code);
 
     char *argv2[] = { "cctxpack", "--max-file-tokens", "lots" };
     code = 0;
-    ASSERT(cli_parse(3, argv2, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(3, argv2, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(2, code);
     PASS();
 }
@@ -77,7 +79,7 @@ TEST parse_missing_path_exits_2(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(2, argv, &o, &code) == CLI_EXIT);
+    ASSERT(cli_parse(2, argv, "pack", &o, &code) == CLI_EXIT);
     ASSERT_EQ(2, code);
     PASS();
 }
@@ -88,7 +90,7 @@ TEST parse_include_repeatable(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(5, argv, &o, &code) == CLI_RUN);
+    ASSERT(cli_parse(5, argv, "pack", &o, &code) == CLI_RUN);
     ASSERT_EQ(2, (int)o.include.n);
     ASSERT_STR_EQ("src/**", o.include.v[0]);
     ASSERT_STR_EQ("*.md", o.include.v[1]);
@@ -101,11 +103,143 @@ TEST parse_budget_and_notree(void)
     pack_opts o;
     int code = 0;
     opts_reset(&o);
-    ASSERT(cli_parse(4, argv, &o, &code) == CLI_RUN);
+    ASSERT(cli_parse(4, argv, "pack", &o, &code) == CLI_RUN);
     ASSERT_EQ(1, o.has_budget);
     ASSERT((size_t)8000 == o.budget);
     ASSERT_EQ(0, o.want_tree);
     PASS();
+}
+
+TEST parse_format_and_sort(void)
+{
+    char *argv[] = { "cctxpack", "--format", "json", "--sort", "mtime" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(5, argv, "pack", &o, &code) == CLI_RUN);
+    ASSERT_EQ(FMT_JSON, o.format);
+    ASSERT_EQ(1, o.fmt_set);
+    ASSERT_EQ(SORT_MTIME, o.sort);
+    ASSERT_EQ(1, o.sort_set);
+    PASS();
+}
+
+TEST parse_rejects_bad_option_values(void)
+{
+    char *a1[] = { "cctxpack", "--format", "html" };
+    char *a2[] = { "cctxpack", "--sort", "random" };
+    char *a3[] = { "cctxpack", "--query", "" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(3, a1, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    code = 0;
+    ASSERT(cli_parse(3, a2, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    code = 0;
+    ASSERT(cli_parse(3, a3, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    PASS();
+}
+
+TEST parse_query_and_sort_recorded(void)
+{
+    char *argv[] = { "cctxpack", "--query", "token budget", "--sort", "size" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(5, argv, "pack", &o, &code) == CLI_RUN);
+    ASSERT_STR_EQ("token budget", o.query);
+    ASSERT_EQ(SORT_SIZE, o.sort);
+    ASSERT_EQ(1, o.sort_set);
+    PASS();
+}
+
+TEST parse_diff_has_no_tree_by_default(void)
+{
+    char *argv[] = { "cctxpack" };
+    char *argv2[] = { "cctxpack", "extra" };
+    char *argv3[] = { "cctxpack", "--tree" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(1, argv, "diff", &o, &code) == CLI_RUN);
+    ASSERT_EQ(0, o.want_tree);
+    code = 0;
+    ASSERT(cli_parse(2, argv2, "diff", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(2, argv3, "diff", &o, &code) == CLI_RUN);
+    ASSERT_EQ(1, o.want_tree);
+    ASSERT_EQ(1, o.tree_set);
+    PASS();
+}
+
+TEST parse_staged_only_with_diff(void)
+{
+    char *argv[] = { "cctxpack", "--staged" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(2, argv, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(2, argv, "diff", &o, &code) == CLI_RUN);
+    ASSERT_EQ(1, o.staged);
+    PASS();
+}
+
+TEST parse_clipboard_flag(void)
+{
+    char *argv[] = { "cctxpack", "--clipboard" };
+    char *argv2[] = { "cctxpack", "--clipboard", "-o", "x.md" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    cli_action a = cli_parse(2, argv, "pack", &o, &code);
+#ifdef _WIN32
+    ASSERT(a == CLI_RUN);
+    ASSERT_EQ(1, o.clipboard);
+#else
+    ASSERT(a == CLI_EXIT);
+    ASSERT_EQ(2, code);
+#endif
+    code = 0;
+    opts_reset(&o);
+    /* rejected everywhere: conflict on Windows, unavailable elsewhere */
+    ASSERT(cli_parse(4, argv2, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+    PASS();
+}
+
+TEST parse_tree_flag_sets_explicit(void)
+{
+    char *argv[] = { "cctxpack", "--tree", "--format", "xml" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(4, argv, "count", &o, &code) == CLI_RUN);
+    ASSERT_EQ(1, o.want_tree);
+    ASSERT_EQ(1, o.tree_set);
+    ASSERT_EQ(FMT_XML, o.format);
+    PASS();
+}
+
+/* A scratch directory outside the repository work tree: file discovery there
+ * falls back to a plain walk, so a probe can control every file it sees. */
+static char *tmp_scratch(const char *name)
+{
+    const char *t = getenv("TEMP");
+    if (!t || !t[0])
+        t = getenv("TMPDIR");
+    if (!t || !t[0])
+        return NULL;
+    char joined[1024];
+    snprintf(joined, sizeof(joined), "%s/cctxpack_%s", t, name);
+    return path_abs(joined);
 }
 
 static const char *bin(void)
@@ -122,6 +256,23 @@ static char *scratch(const char *name)
     ctx_mkdir("ctx_e2e_tmp");
     snprintf(joined, sizeof(joined), "ctx_e2e_tmp/%s", name);
     return path_abs(joined);
+}
+
+/* Run the binary with `dir` as the working directory. */
+static int run_in(const char *dir, const char *args, const char *out,
+    const char *err)
+{
+    char *saved = path_cwd();
+    if (!saved)
+        return -1;
+    if (ctx_chdir(dir) != 0) {
+        free(saved);
+        return -1;
+    }
+    int rc = test_run(bin(), args, out, err);
+    ctx_chdir(saved);
+    free(saved);
+    return rc;
 }
 
 TEST e2e_version_and_help(void)
@@ -151,10 +302,13 @@ TEST e2e_usage_errors(void)
     char *err = scratch("e2e_err.txt");
     ASSERT(out && err);
     ASSERT_EQ(2, test_run(bin(), "--nope", out, err));
-    ASSERT_EQ(2, test_run(bin(), "count", out, err));
+    ASSERT_EQ(2, test_run(bin(), "--format html", out, err));
+    ASSERT_EQ(2, test_run(bin(), "--sort random", out, err));
+    ASSERT_EQ(2, test_run(bin(), "--staged", out, err));
+    ASSERT_EQ(2, test_run(bin(), "diff some/path", out, err));
     char *buf = test_read_all(err, NULL);
     ASSERT(buf != NULL);
-    ASSERT(strstr(buf, "not implemented yet") != NULL);
+    ASSERT(strstr(buf, "cctxpack:") != NULL);
     free(buf);
     free(out);
     free(err);
@@ -333,6 +487,253 @@ TEST e2e_o_guard_refuses_input_overwrite(void)
     PASS();
 }
 
+TEST e2e_count_and_tree(void)
+{
+    char *out = scratch("e2e_count.txt");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(out && err && nul);
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "count .", out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "bytes") != NULL);
+    ASSERT(strstr(b, "README.md") != NULL);
+    ASSERT(strstr(b, "total") != NULL);
+    /* binary files count bytes but no tokens */
+    ASSERT(strstr(b, "data/blob.bin") != NULL);
+    free(b);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "count --format json .", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON *files = cJSON_GetObjectItem(j, "files");
+    ASSERT(files != NULL && cJSON_GetArraySize(files) >= 4);
+    cJSON *total = cJSON_GetObjectItem(j, "total");
+    ASSERT(total != NULL);
+    ASSERT(cJSON_GetObjectItem(total, "bytes")->valuedouble > 0);
+    cJSON_Delete(j);
+    free(b);
+
+    /* tree prints connector lines only, never a markdown fence */
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "tree .", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "README.md") != NULL);
+    ASSERT(strstr(b, "blob.bin") != NULL);
+    ASSERT(strstr(b, "```") == NULL);
+    free(b);
+    free(out);
+    free(err);
+    free(nul);
+    PASS();
+}
+
+TEST e2e_other_formats(void)
+{
+    char *out = scratch("e2e_fmt.txt");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(out && err && nul);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "pack . --format xml", out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strncmp(b, "<?xml version=\"1.0\"", 19) == 0);
+    ASSERT(strstr(b, "<file path=\"README.md\"") != NULL);
+    ASSERT(strstr(b, "</context>") != NULL);
+    free(b);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "pack . --format json", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    ASSERT(cJSON_GetObjectItem(j, "tree") != NULL);
+    cJSON *files = cJSON_GetObjectItem(j, "files");
+    ASSERT(files != NULL && cJSON_GetArraySize(files) >= 4);
+    cJSON_Delete(j);
+    free(b);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "pack . --format txt", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strncmp(b, "cctxpack bundle: ", 17) == 0);
+    ASSERT(strstr(b, "===== README.md =====") != NULL);
+    ASSERT(strstr(b, "```text") == NULL);
+    free(b);
+    free(out);
+    free(err);
+    free(nul);
+    PASS();
+}
+
+TEST e2e_query_and_sort_order(void)
+{
+    char *out = scratch("e2e_order.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(out && err && nul);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "pack . --query greet", out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    char *first = strstr(b, "### ");
+    ASSERT(first != NULL);
+    /* the only basename hit ranks ahead of every non-matching path */
+    ASSERT(strncmp(first, "### src/greet.c", 15) == 0);
+    free(b);
+
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, "pack . --sort size", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    char *a = strstr(b, "### README.md");
+    char *z = strstr(b, "### docs/guide.md");
+    ASSERT(a != NULL && z != NULL);
+    /* smallest first: README.md is shorter than docs/guide.md */
+    ASSERT(a < z);
+    free(b);
+    free(out);
+    free(err);
+    free(nul);
+    PASS();
+}
+
+TEST e2e_config_file(void)
+{
+    char *dir = tmp_scratch("cfgtest");
+    char *out = scratch("e2e_cfg.txt");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ctx_mkdir(dir);
+    char cp[1024], fp[1024];
+    snprintf(cp, sizeof(cp), "%s/.cctxpack.json", dir);
+    snprintf(fp, sizeof(fp), "%s/only.txt", dir);
+    ASSERT(test_write_file(fp, "config probe\n", 13) == 0);
+
+    /* config picks the format; the CLI overrides it */
+    ASSERT(test_write_file(cp, "{\"format\":\"txt\",\"tree\":false}\n", 33)
+        == 0);
+    ASSERT_EQ(0, run_in(dir, "pack .", out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "cctxpack bundle:") != NULL);
+    ASSERT(strstr(b, "```") == NULL);
+    free(b);
+
+    ASSERT_EQ(0, run_in(dir, "pack . --format md", out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "### only.txt") != NULL);
+    ASSERT(strstr(b, "cctxpack bundle:") == NULL);
+    free(b);
+
+    /* malformed JSON is a usage error with a diagnostic */
+    ASSERT(test_write_file(cp, "{oops\n", 6) == 0);
+    ASSERT_EQ(2, run_in(dir, "pack .", out, err));
+    b = test_read_all(err, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "invalid JSON") != NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+TEST e2e_diff_worktree_and_staged(void)
+{
+    char *dir = scratch("difftree");
+    char *out = scratch("e2e_diff.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ctx_mkdir(dir);
+    char ap[1024], bp[1024];
+    snprintf(ap, sizeof(ap), "%s/a.txt", dir);
+    snprintf(bp, sizeof(bp), "%s/b.txt", dir);
+    ASSERT(test_write_file(ap, "one\n", 4) == 0);
+    ASSERT(test_write_file(bp, "two\n", 4) == 0);
+
+    /* git commands are run with -C so the test cwd is never disturbed */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    /* an unstaged edit shows up */
+    ASSERT(test_write_file(ap, "one changed\n", 12) == 0);
+    char args[1024];
+    snprintf(args, sizeof(args), "diff -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "a.txt") != NULL);
+    ASSERT(strstr(b, "b.txt") == NULL);
+    free(b);
+
+    /* staging a.txt moves it into the --staged view only */
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" add a.txt", dir);
+    ASSERT(test_system(cmd) == 0);
+    ASSERT(test_write_file(bp, "two changed\n", 12) == 0);
+    snprintf(args, sizeof(args), "diff --staged -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "a.txt") != NULL);
+    ASSERT(strstr(b, "b.txt") == NULL);
+    free(b);
+
+    snprintf(args, sizeof(args), "diff -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "b.txt") != NULL);
+    ASSERT(strstr(b, "a.txt") == NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+TEST e2e_diff_outside_worktree(void)
+{
+    char *out = scratch("e2e_nogit.txt");
+    char *err = scratch("e2e_err.txt");
+    ASSERT(out && err);
+    /* the OS temp dir is not inside any work tree we control */
+    char *tmp = getenv("TEMP");
+    if (!tmp || !tmp[0])
+        tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0])
+        SKIPm("no temp dir");
+    char *dir = path_abs(tmp);
+    ASSERT(dir != NULL);
+    ASSERT_EQ(2, run_in(dir, "diff", out, err));
+    free(dir);
+    free(out);
+    free(err);
+    PASS();
+}
+
 SUITE(cli_suite)
 {
     RUN_TEST(parse_no_args_runs_pack);
@@ -342,6 +743,13 @@ SUITE(cli_suite)
     RUN_TEST(parse_missing_path_exits_2);
     RUN_TEST(parse_include_repeatable);
     RUN_TEST(parse_budget_and_notree);
+    RUN_TEST(parse_format_and_sort);
+    RUN_TEST(parse_rejects_bad_option_values);
+    RUN_TEST(parse_query_and_sort_recorded);
+    RUN_TEST(parse_diff_has_no_tree_by_default);
+    RUN_TEST(parse_staged_only_with_diff);
+    RUN_TEST(parse_clipboard_flag);
+    RUN_TEST(parse_tree_flag_sets_explicit);
 }
 
 SUITE(e2e_suite)
@@ -354,5 +762,11 @@ SUITE(e2e_suite)
     RUN_TEST(e2e_deterministic_output);
     RUN_TEST(e2e_budget_invariant_and_exit3);
     RUN_TEST(e2e_o_guard_refuses_input_overwrite);
+    RUN_TEST(e2e_count_and_tree);
+    RUN_TEST(e2e_other_formats);
+    RUN_TEST(e2e_query_and_sort_order);
+    RUN_TEST(e2e_config_file);
+    RUN_TEST(e2e_diff_worktree_and_staged);
+    RUN_TEST(e2e_diff_outside_worktree);
     test_rm_rf("ctx_e2e_tmp");
 }

@@ -19,7 +19,10 @@
 typedef struct {
     const char *path;
     size_t est;
+    size_t tokens;
     uint64_t size;
+    long long key;
+    long long key2;
     int binary;
     int truncated;
     int included;
@@ -41,6 +44,69 @@ size_t pack_fit(const size_t *ests, size_t n, size_t remaining,
     return count;
 }
 
+static int lower_ascii(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+static size_t count_ci(const char *hay, size_t hlen, const char *term,
+    size_t tlen)
+{
+    size_t n = 0;
+    if (tlen == 0 || hlen < tlen)
+        return 0;
+    for (size_t i = 0; i + tlen <= hlen;) {
+        size_t j = 0;
+        while (j < tlen
+            && lower_ascii((unsigned char)hay[i + j])
+                == lower_ascii((unsigned char)term[j]))
+            j++;
+        if (j == tlen) {
+            n++;
+            i += tlen;
+        } else {
+            i++;
+        }
+    }
+    return n;
+}
+
+/* FR-015: ASCII case-insensitive, non-overlapping occurrence count of every
+ * whitespace-separated query term.  A hit in the basename counts twice. */
+size_t pack_score(const char *path, const char *query)
+{
+    size_t plen = strlen(path);
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    size_t blen = plen - (size_t)(base - path);
+    size_t score = 0;
+    const char *q = query;
+    while (*q) {
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
+            q++;
+        const char *t = q;
+        while (*q && *q != ' ' && *q != '\t' && *q != '\n' && *q != '\r')
+            q++;
+        size_t tlen = (size_t)(q - t);
+        if (tlen == 0)
+            continue;
+        score += count_ci(path, plen, t, tlen);
+        score += count_ci(base, blen, t, tlen);
+    }
+    return score;
+}
+
+static int cmp_item(const void *a, const void *b)
+{
+    const pack_item *x = a;
+    const pack_item *y = b;
+    if (x->key != y->key)
+        return x->key < y->key ? -1 : 1;
+    if (x->key2 != y->key2)
+        return x->key2 < y->key2 ? -1 : 1;
+    return strcmp(x->path, y->path);
+}
+
 static void join_path(char *buf, size_t cap, const char *root, const char *rel)
 {
     snprintf(buf, cap, "%s/%s", root, rel);
@@ -54,10 +120,9 @@ static void report(const pack_opts *o, const pack_item *items, size_t n,
         fprintf(stderr, " (%zu truncated)", truncated);
     fprintf(stderr, ", excluded %zu\n", n - included);
     for (size_t i = 0; i < n; i++) {
-        if (!items[i].included) {
+        if (!items[i].included)
             fprintf(stderr, "cctxpack: excluded %s (%s)\n", items[i].path,
                 items[i].binary ? "binary" : "over budget");
-        }
     }
     if (o->has_budget)
         fprintf(stderr, "cctxpack: est. tokens %zu/%zu (budget)\n", used,
@@ -66,74 +131,136 @@ static void report(const pack_opts *o, const pack_item *items, size_t n,
         fprintf(stderr, "cctxpack: est. tokens %zu\n", used);
 }
 
-int pack_run(const pack_opts *o)
+/* One sink for the three destination kinds: stdout, -o file, clipboard buffer.
+ * `out == NULL` means the clipboard buffer (`clip`) is being filled. */
+static int sink_write(FILE *out, strbuf *clip, const char *data, size_t len)
 {
-    int rc = 1;
-    strlist paths;
-    strlist inc_paths;
-    strbuf header, tree_all, tree_in;
-    pack_item *items = NULL;
-    size_t *ests = NULL;
-    unsigned char *incl = NULL;
-    size_t truncated = 0;
-    size_t used = 0;
+    if (out)
+        return fwrite(data, 1, len, out) == len ? 0 : -1;
+    return strbuf_appendn(clip, data, len);
+}
 
-    strlist_init(&paths);
-    strlist_init(&inc_paths);
-    strbuf_init(&header);
-    strbuf_init(&tree_all);
-    strbuf_init(&tree_in);
+#ifdef _WIN32
+static FILE *clip_open(void)
+{
+    return _popen("clip", "wb");
+}
 
-    int used_git = 0;
-    if (files_discover(o->root, o->fake_ls, &paths, &used_git) != 0)
-        goto cleanup;
-    root_filter(&paths, &o->path_args);
-    glob_filter(&paths, &o->include, &o->exclude);
-    files_sort(&paths);
+static int clip_finish(FILE *p)
+{
+    return _pclose(p);
+}
+#else
+static FILE *clip_open(void)
+{
+    return NULL;
+}
 
-    format_header(&header, o->root_display);
-    if (o->want_tree && paths.n > 0)
-        format_tree(&tree_all, paths.v, paths.n);
-    size_t reserve = tokens_estimate(header.data, header.len)
-        + (tree_all.len ? tokens_estimate(tree_all.data, tree_all.len) : 0);
+static int clip_finish(FILE *p)
+{
+    (void)p;
+    return -1;
+}
+#endif
 
-    items = calloc(paths.n ? paths.n : 1, sizeof(*items));
-    ests = calloc(paths.n ? paths.n : 1, sizeof(*ests));
-    incl = calloc(paths.n ? paths.n : 1, 1);
-    if (!items || !ests || !incl)
-        goto cleanup;
+static size_t est_of(const strbuf *b)
+{
+    return b->len ? tokens_estimate(b->data, b->len) : 0;
+}
 
-    for (size_t i = 0; i < paths.n; i++) {
+static int collect(const pack_opts *o, strlist *paths, pack_item **out)
+{
+    if (files_discover(o->root, o->fake_ls, paths, NULL) != 0)
+        return -1;
+    root_filter(paths, &o->path_args);
+    glob_filter(paths, &o->include, &o->exclude);
+    files_sort(paths);
+
+    pack_item *items = calloc(paths->n ? paths->n : 1, sizeof(*items));
+    if (!items)
+        return -1;
+
+    /* FR-016/FR-015: emission order is decided before any file is read, so the
+     * estimate table and the budget fit stay aligned with what is rendered. */
+    for (size_t i = 0; i < paths->n; i++) {
+        items[i].path = paths->v[i];
+        items[i].key = files_sort_key(o->root, paths->v[i], o->sort);
+        if (o->query) {
+            items[i].key2 = items[i].key;
+            items[i].key = -(long long)pack_score(paths->v[i], o->query);
+        }
+    }
+    if (paths->n)
+        qsort(items, paths->n, sizeof(*items), cmp_item);
+
+    for (size_t i = 0; i < paths->n; i++) {
         char full[4096];
-        join_path(full, sizeof(full), o->root, paths.v[i]);
+        join_path(full, sizeof(full), o->root, items[i].path);
         read_file rf;
         if (read_file_open(full, o->max_file_tokens, &rf) != 0) {
-            fprintf(stderr, "cctxpack: cannot read %s\n", paths.v[i]);
-            goto cleanup;
+            fprintf(stderr, "cctxpack: cannot read %s\n", items[i].path);
+            free(items);
+            return -1;
         }
-        items[i].path = paths.v[i];
         items[i].binary = rf.binary;
         items[i].truncated = rf.truncated;
         items[i].size = rf.file_size;
         strbuf sec;
         strbuf_init(&sec);
         if (rf.binary) {
-            format_binary(&sec, paths.v[i], (size_t)rf.file_size);
+            format_binary(&sec, o->format, 0, items[i].path,
+                (size_t)rf.file_size);
         } else {
-            format_section(&sec, paths.v[i], rf.data, rf.len);
+            /* FR-007: the per-file token count is the estimate of the content
+             * alone, rendered with first=0 so it never depends on position. */
+            items[i].tokens = tokens_estimate(rf.data, rf.len);
+            format_section(&sec, o->format, 0, items[i].path, rf.data, rf.len,
+                items[i].tokens);
         }
-        ests[i] = tokens_estimate(sec.data, sec.len);
+        items[i].est = est_of(&sec);
         strbuf_free(&sec);
         read_file_free(&rf);
     }
+    *out = items;
+    return 0;
+}
 
-    size_t remaining = 0;
-    size_t count;
+int pack_run(const pack_opts *o)
+{
+    int rc = 1;
+    strlist paths, inc_paths;
+    strbuf header, tree_all, tree_in, files_open, close;
+    pack_item *items = NULL;
+    size_t truncated = 0, used = 0, count = 0;
+
+    strlist_init(&paths);
+    strlist_init(&inc_paths);
+    strbuf_init(&header);
+    strbuf_init(&tree_all);
+    strbuf_init(&tree_in);
+    strbuf_init(&files_open);
+    strbuf_init(&close);
+
+    if (collect(o, &paths, &items) != 0)
+        goto cleanup;
+
+    format_open(&header, o->root_display, o->format);
+    format_files_open(&files_open, o->format);
+    format_close(&close, o->format);
+    if (o->want_tree)
+        format_tree(&tree_all, paths.v, paths.n, o->format);
+
     if (o->has_budget) {
-        remaining = o->budget > reserve ? o->budget - reserve : 0;
-        count = pack_fit(ests, paths.n, remaining, incl);
-        for (size_t i = 0; i < paths.n; i++)
-            items[i].included = incl[i] != 0;
+        size_t reserve = est_of(&header) + est_of(&tree_all)
+            + est_of(&files_open) + est_of(&close);
+        size_t remaining = o->budget > reserve ? o->budget - reserve : 0;
+        for (size_t i = 0; i < paths.n; i++) {
+            if (items[i].est <= remaining) {
+                items[i].included = 1;
+                remaining -= items[i].est;
+                count++;
+            }
+        }
         if (count == 0) {
             fprintf(stderr,
                 "cctxpack: nothing fits the budget (reserve %zu, budget %zu)\n",
@@ -144,34 +271,37 @@ int pack_run(const pack_opts *o)
         }
     } else {
         count = paths.n;
-        for (size_t i = 0; i < paths.n; i++) {
+        for (size_t i = 0; i < paths.n; i++)
             items[i].included = 1;
-            incl[i] = 1;
-        }
     }
 
     for (size_t i = 0; i < paths.n; i++) {
-        if (incl[i])
-            strlist_push(&inc_paths, paths.v[i]);
+        if (items[i].included)
+            strlist_push(&inc_paths, items[i].path);
     }
-    if (o->want_tree && inc_paths.n > 0)
-        format_tree(&tree_in, inc_paths.v, inc_paths.n);
+    files_sort(&inc_paths);
+    if (o->want_tree)
+        format_tree(&tree_in, inc_paths.v, inc_paths.n, o->format);
 
-    used = tokens_estimate(header.data, header.len)
-        + (tree_in.len ? tokens_estimate(tree_in.data, tree_in.len) : 0);
+    used = est_of(&header) + est_of(&tree_in) + est_of(&files_open)
+        + est_of(&close);
     for (size_t i = 0; i < paths.n; i++) {
-        if (incl[i]) {
-            used += ests[i];
+        if (items[i].included) {
+            used += items[i].est;
             if (items[i].truncated)
                 truncated++;
         }
     }
 
-    FILE *out = stdout;
-    if (o->output) {
+    FILE *out = NULL;
+    strbuf clip;
+    strbuf_init(&clip);
+    if (o->clipboard) {
+        /* rendered into `clip`, then encoded for clip.exe below */
+    } else if (o->output) {
         char *abs_out = path_abs(o->output);
         for (size_t i = 0; abs_out && i < paths.n; i++) {
-            if (!incl[i])
+            if (!items[i].included)
                 continue;
             char full[4096];
             join_path(full, sizeof(full), o->root, items[i].path);
@@ -192,48 +322,71 @@ int pack_run(const pack_opts *o)
             fprintf(stderr, "cctxpack: cannot write %s\n", o->output);
             goto cleanup;
         }
+    } else {
+        out = stdout;
     }
 
     rc = 0;
-    fwrite(header.data, 1, header.len, out);
-    fwrite(tree_in.data, 1, tree_in.len, out);
-    for (size_t i = 0; i < paths.n; i++) {
-        if (!incl[i])
+    int wr = sink_write(out, &clip, header.data, header.len);
+    wr |= sink_write(out, &clip, tree_in.data, tree_in.len);
+    wr |= sink_write(out, &clip, files_open.data, files_open.len);
+    int first_item = 1;
+    for (size_t i = 0; i < paths.n && wr == 0; i++) {
+        if (!items[i].included)
             continue;
         strbuf sec;
         strbuf_init(&sec);
-        read_file rf;
-        memset(&rf, 0, sizeof(rf));
         if (items[i].binary) {
-            format_binary(&sec, items[i].path, (size_t)items[i].size);
+            format_binary(&sec, o->format, first_item, items[i].path,
+                (size_t)items[i].size);
         } else {
             char full[4096];
             join_path(full, sizeof(full), o->root, items[i].path);
+            read_file rf;
             if (read_file_open(full, o->max_file_tokens, &rf) != 0) {
                 fprintf(stderr, "cctxpack: cannot read %s\n", items[i].path);
                 strbuf_free(&sec);
-                rc = 1;
-                break;
+                goto cleanup;
             }
-            format_section(&sec, items[i].path, rf.data, rf.len);
+            format_section(&sec, o->format, first_item, items[i].path, rf.data,
+                rf.len, items[i].tokens);
             read_file_free(&rf);
         }
-        fwrite(sec.data, 1, sec.len, out);
+        wr |= sink_write(out, &clip, sec.data, sec.len);
         strbuf_free(&sec);
+        first_item = 0;
     }
-    if (out != stdout && fclose(out) != 0 && rc == 0)
+    wr |= sink_write(out, &clip, close.data, close.len);
+    if (wr != 0)
+        rc = 1;
+
+    if (o->clipboard) {
+        size_t ulen = 0;
+        char *u = utf8_to_utf16le(clip.len ? clip.data : "", clip.len, &ulen);
+        FILE *p = u ? clip_open() : NULL;
+        if (!p) {
+            fprintf(stderr, "cctxpack: cannot open the clipboard helper\n");
+            rc = 1;
+        } else if (fwrite(u, 1, ulen, p) != ulen || clip_finish(p) != 0) {
+            fprintf(stderr, "cctxpack: clipboard helper failed\n");
+            rc = 1;
+        }
+        free(u);
+    }
+    strbuf_free(&clip);
+    if (out && out != stdout && fclose(out) != 0 && rc == 0)
         rc = 1;
     if (rc == 0 && (o->want_report || o->has_budget))
         report(o, items, paths.n, count, truncated, used);
 
 cleanup:
-    free(items);
-    free(ests);
-    free(incl);
-    strlist_free(&inc_paths);
-    strlist_free(&paths);
     strbuf_free(&header);
     strbuf_free(&tree_all);
     strbuf_free(&tree_in);
+    strbuf_free(&files_open);
+    strbuf_free(&close);
+    strlist_free(&paths);
+    strlist_free(&inc_paths);
+    free(items);
     return rc;
 }

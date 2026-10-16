@@ -7,6 +7,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <sys/utime.h>
+static int set_mtime(const char *path, time_t t)
+{
+    struct _utimbuf u;
+    u.actime = t;
+    u.modtime = t;
+    return _utime(path, &u);
+}
+#else
+#include <utime.h>
+static int set_mtime(const char *path, time_t t)
+{
+    struct utimbuf u;
+    u.actime = t;
+    u.modtime = t;
+    return utime(path, &u);
+}
+#endif
+
 TEST glob_star_matches_any_depth(void)
 {
     ASSERT(glob_match("a.md", "*.md"));
@@ -190,6 +210,54 @@ TEST files_walk_nested_skips_dotgit(void)
     PASS();
 }
 
+TEST files_sort_mode_size_and_mtime(void)
+{
+    test_rm_rf("sorttmp");
+    ASSERT(ctx_mkdir("sorttmp") == 0);
+    ASSERT(test_write_file("sorttmp/big.txt",
+        "012345678901234567890123456789", 30) == 0);
+    ASSERT(test_write_file("sorttmp/small.txt", "abc", 3) == 0);
+    ASSERT(test_write_file("sorttmp/old.txt", "o", 1) == 0);
+    ASSERT(test_write_file("sorttmp/new.txt", "n", 1) == 0);
+    ASSERT(set_mtime("sorttmp/old.txt", (time_t)1000000000) == 0);
+    ASSERT(set_mtime("sorttmp/new.txt", (time_t)1200000000) == 0);
+
+    ASSERT_EQ(30, (int)files_sort_key("sorttmp", "big.txt", SORT_SIZE));
+    ASSERT_EQ(3, (int)files_sort_key("sorttmp", "small.txt", SORT_SIZE));
+    ASSERT_EQ(0, (int)files_sort_key("sorttmp", "big.txt", SORT_NAME));
+    ASSERT_EQ(-1200000000LL,
+        files_sort_key("sorttmp", "new.txt", SORT_MTIME));
+    /* an unreadable path degrades to key 0 instead of failing the run */
+    ASSERT_EQ(0, (int)files_sort_key("sorttmp", "nope.txt", SORT_SIZE));
+
+    strlist l;
+    strlist_init(&l);
+    ASSERT(strlist_push(&l, "big.txt") == 0);
+    ASSERT(strlist_push(&l, "small.txt") == 0);
+    files_sort_mode(&l, "sorttmp", SORT_SIZE);
+    ASSERT_STR_EQ("small.txt", l.v[0]);
+    ASSERT_STR_EQ("big.txt", l.v[1]);
+
+    strlist_free(&l);
+    strlist_init(&l);
+    ASSERT(strlist_push(&l, "old.txt") == 0);
+    ASSERT(strlist_push(&l, "new.txt") == 0);
+    files_sort_mode(&l, "sorttmp", SORT_MTIME);
+    ASSERT_STR_EQ("new.txt", l.v[0]);
+    ASSERT_STR_EQ("old.txt", l.v[1]);
+
+    strlist_free(&l);
+    strlist_init(&l);
+    ASSERT(strlist_push(&l, "small.txt") == 0);
+    ASSERT(strlist_push(&l, "big.txt") == 0);
+    files_sort_mode(&l, "sorttmp", SORT_NAME);
+    ASSERT_STR_EQ("big.txt", l.v[0]);
+    ASSERT_STR_EQ("small.txt", l.v[1]);
+    strlist_free(&l);
+    test_rm_rf("sorttmp");
+    PASS();
+}
+
 SUITE(files_suite)
 {
     RUN_TEST(glob_star_matches_any_depth);
@@ -202,6 +270,7 @@ SUITE(files_suite)
     RUN_TEST(root_filter_prefix_and_exact);
     RUN_TEST(strlist_push_grows);
     RUN_TEST(files_sort_byte_order);
+    RUN_TEST(files_sort_mode_size_and_mtime);
     RUN_TEST(files_git_uses_injected_output);
     RUN_TEST(files_walk_nested_skips_dotgit);
 }

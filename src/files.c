@@ -5,13 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
 #else
 #include <dirent.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -317,4 +317,132 @@ static int cmp_path(const void *a, const void *b)
 void files_sort(strlist *l)
 {
     qsort(l->v, l->n, sizeof(char *), cmp_path);
+}
+
+#ifdef _WIN32
+static wchar_t *to_wide(const char *s)
+{
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (wlen <= 0)
+        return NULL;
+    wchar_t *w = malloc((size_t)wlen * sizeof(wchar_t));
+    if (!w)
+        return NULL;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, wlen);
+    return w;
+}
+#endif
+
+long long files_sort_key(const char *root, const char *path, int mode)
+{
+    if (mode == SORT_NAME)
+        return 0;
+    char full[4096];
+    snprintf(full, sizeof(full), "%s/%s", root, path);
+    long long size, mtime;
+#ifdef _WIN32
+    wchar_t *w = to_wide(full);
+    if (!w)
+        return 0;
+    struct _stat64 st;
+    int rc = _wstat64(w, &st);
+    free(w);
+    if (rc != 0)
+        return 0;
+    size = (long long)st.st_size;
+    mtime = (long long)st.st_mtime;
+#else
+    struct stat st;
+    if (stat(full, &st) != 0)
+        return 0;
+    size = (long long)st.st_size;
+    mtime = (long long)st.st_mtime;
+#endif
+    /* Sorts ascend on `key`: size ascending, mtime negated so newest is first. */
+    return mode == SORT_MTIME ? -mtime : size;
+}
+
+typedef struct {
+    char *path;
+    long long key;
+} sort_ent;
+
+static int cmp_ent(const void *a, const void *b)
+{
+    const sort_ent *x = a;
+    const sort_ent *y = b;
+    if (x->key != y->key)
+        return x->key < y->key ? -1 : 1;
+    return strcmp(x->path, y->path);
+}
+
+void files_sort_mode(strlist *l, const char *root, int mode)
+{
+    if (mode != SORT_MTIME && mode != SORT_SIZE) {
+        files_sort(l);
+        return;
+    }
+    if (l->n == 0)
+        return;
+    sort_ent *e = malloc(l->n * sizeof(*e));
+    if (!e) {
+        files_sort(l);
+        return;
+    }
+    for (size_t i = 0; i < l->n; i++) {
+        e[i].path = l->v[i];
+        e[i].key = files_sort_key(root, l->v[i], mode);
+    }
+    qsort(e, l->n, sizeof(*e), cmp_ent);
+    for (size_t i = 0; i < l->n; i++)
+        l->v[i] = e[i].path;
+    free(e);
+}
+
+int files_git_top(char **out)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    if (popen_run("git rev-parse --show-toplevel", &buf, &len) != 0) {
+        free(buf);
+        return FILES_NOGIT;
+    }
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'
+                          || buf[len - 1] == ' '))
+        buf[--len] = '\0';
+    if (len == 0) {
+        free(buf);
+        return FILES_NOGIT;
+    }
+    path_normalize(buf);
+    *out = buf;
+    return 0;
+}
+
+int files_git_diff(int staged, strlist *out, char **top)
+{
+    int rc = files_git_top(top);
+    if (rc != 0)
+        return rc;
+    char *saved = NULL;
+    if (chdir_restore(*top, &saved) != 0) {
+        free(*top);
+        *top = NULL;
+        return FILES_ERR;
+    }
+    const char *cmd = staged
+        ? "git diff --name-only --diff-filter=ACMR -z --cached"
+        : "git diff --name-only --diff-filter=ACMR -z";
+    char *buf = NULL;
+    size_t len = 0;
+    int prc = popen_run(cmd, &buf, &len);
+    chdir_back(saved);
+    int push = prc == 0 ? split_push(out, buf, len, '\0') : FILES_ERR;
+    free(buf);
+    if (push != 0) {
+        free(*top);
+        *top = NULL;
+        return FILES_ERR;
+    }
+    return 0;
 }

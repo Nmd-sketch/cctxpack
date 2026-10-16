@@ -18,6 +18,11 @@ int strbuf_appendf(strbuf *sb, const char *fmt, ...);
 char *str_dup(const char *s);
 void path_normalize(char *p);
 
+/* Encode UTF-8 as UTF-16LE with a byte-order mark, for the Windows clipboard.
+ * Returns a malloc'd buffer and its byte length (terminator excluded).
+ * Malformed UTF-8 bytes become U+FFFD. */
+char *utf8_to_utf16le(const char *s, size_t len, size_t *out_len);
+
 char *path_cwd(void);
 char *path_abs(const char *path);
 char *path_basename_dup(const char *path);

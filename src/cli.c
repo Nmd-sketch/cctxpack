@@ -1,5 +1,6 @@
 #include "cli.h"
 
+#include "format.h"
 #include "util.h"
 
 #include <errno.h>
@@ -26,6 +27,7 @@ enum {
     OPT_SORT,
     OPT_QUERY,
     OPT_CLIPBOARD,
+    OPT_STAGED,
     OPT_HELP,
     OPT_VERSION
 };
@@ -42,6 +44,7 @@ static const struct option longopts[] = {
     { "sort", required_argument, NULL, OPT_SORT },
     { "query", required_argument, NULL, OPT_QUERY },
     { "clipboard", no_argument, NULL, OPT_CLIPBOARD },
+    { "staged", no_argument, NULL, OPT_STAGED },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -65,10 +68,11 @@ void cli_help(void)
            "  --max-file-tokens N   truncate files above N est. tokens\n"
            "  --sort S              name | mtime | size (default: name)\n"
            "  --query TEXT          re-rank candidates by keyword overlap\n"
-           "  --tree / --no-tree    include the directory tree (default: on)\n"
+           "  --tree / --no-tree    include the directory tree (default: on, off for diff)\n"
            "  --report              print the budget report on stderr\n"
            "  -o FILE               write the bundle to FILE (default: stdout)\n"
            "  --clipboard           copy the bundle to the Windows clipboard\n"
+           "  --staged              diff: use staged changes (default: unstaged)\n"
            "  --help                show this help\n"
            "  --version             show version\n");
 }
@@ -254,7 +258,8 @@ static int setup_paths(pack_opts *o, int argc, char **argv, int first)
     return 0;
 }
 
-cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
+cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
+    int *exit_code)
 {
     strlist_init(&o->path_args);
     strlist_init(&o->include);
@@ -264,8 +269,18 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
     o->budget = 0;
     o->has_budget = 0;
     o->max_file_tokens = 0;
+    o->max_tokens_set = 0;
     o->want_report = 0;
-    o->want_tree = 1;
+    /* FR-010: the tree is on for pack/count/tree, off for diff. */
+    o->want_tree = strcmp(cmd, "diff") != 0;
+    o->tree_set = 0;
+    o->format = FMT_MD;
+    o->fmt_set = 0;
+    o->sort = SORT_NAME;
+    o->sort_set = 0;
+    o->clipboard = 0;
+    o->staged = 0;
+    o->query = NULL;
     o->output = NULL;
     o->fake_ls = NULL;
 
@@ -290,6 +305,7 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
                     optarg);
                 return CLI_EXIT;
             }
+            o->max_tokens_set = 1;
             break;
         case OPT_INCLUDE:
             if (!optarg[0]) {
@@ -314,40 +330,58 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
         case OPT_REPORT:
             o->want_report = 1;
             break;
-        case OPT_FORMAT:
-            if (strcmp(optarg, "md") != 0) {
-                fprintf(stderr,
-                    "cctxpack: --format %s not implemented yet (planned M3)\n",
+        case OPT_FORMAT: {
+            int f = format_parse(optarg);
+            if (f < 0) {
+                *exit_code = usage_error("--format expects md|xml|json|txt",
                     optarg);
-                *exit_code = 2;
                 return CLI_EXIT;
             }
+            o->format = f;
+            o->fmt_set = 1;
             break;
+        }
         case OPT_TREE:
             o->want_tree = 1;
+            o->tree_set = 1;
             break;
         case OPT_NOTREE:
             o->want_tree = 0;
+            o->tree_set = 1;
             break;
         case OPT_SORT:
-            if (strcmp(optarg, "name") != 0) {
-                fprintf(stderr,
-                    "cctxpack: --sort %s not implemented yet (planned M4)\n",
+            if (strcmp(optarg, "name") == 0)
+                o->sort = SORT_NAME;
+            else if (strcmp(optarg, "mtime") == 0)
+                o->sort = SORT_MTIME;
+            else if (strcmp(optarg, "size") == 0)
+                o->sort = SORT_SIZE;
+            else {
+                *exit_code = usage_error("--sort expects name|mtime|size",
                     optarg);
-                *exit_code = 2;
                 return CLI_EXIT;
             }
+            o->sort_set = 1;
             break;
         case OPT_QUERY:
-            fprintf(stderr,
-                "cctxpack: --query not implemented yet (planned M4)\n");
-            *exit_code = 2;
-            return CLI_EXIT;
+            if (!optarg[0]) {
+                *exit_code = usage_error("empty --query text", NULL);
+                return CLI_EXIT;
+            }
+            o->query = optarg;
+            break;
         case OPT_CLIPBOARD:
-            fprintf(stderr,
-                "cctxpack: --clipboard not implemented yet (planned M4)\n");
-            *exit_code = 2;
+#ifdef _WIN32
+            o->clipboard = 1;
+            break;
+#else
+            *exit_code = usage_error("--clipboard is only available on Windows",
+                NULL);
             return CLI_EXIT;
+#endif
+        case OPT_STAGED:
+            o->staged = 1;
+            break;
         case OPT_HELP:
             cli_help();
             *exit_code = 0;
@@ -362,6 +396,32 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
             *exit_code = 2;
             return CLI_EXIT;
         }
+    }
+
+    if (o->clipboard && o->output) {
+        *exit_code = usage_error("--clipboard and -o cannot be combined", NULL);
+        return CLI_EXIT;
+    }
+    if (o->staged && strcmp(cmd, "diff") != 0) {
+        *exit_code = usage_error("--staged is only valid with diff", NULL);
+        return CLI_EXIT;
+    }
+    if (strcmp(cmd, "diff") == 0) {
+        if (optind < argc) {
+            *exit_code = usage_error("diff takes no paths", argv[optind]);
+            return CLI_EXIT;
+        }
+        o->root = str_dup(".");
+        if (!o->root) {
+            *exit_code = oom();
+            return CLI_EXIT;
+        }
+        o->root_display = display_of(o->root);
+        if (!o->root_display) {
+            *exit_code = oom();
+            return CLI_EXIT;
+        }
+        return CLI_RUN;
     }
 
     int code = setup_paths(o, argc, argv, optind);
