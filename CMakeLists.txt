@@ -36,6 +36,10 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+if(MINGW)
+    add_link_options(-static)
+endif()
+
 add_executable(cctxpack src/main.c)
 target_compile_definitions(cctxpack PRIVATE CTX_VERSION="${PROJECT_VERSION}")
 
