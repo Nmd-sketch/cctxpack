@@ -134,16 +134,19 @@ inbound opportunities (recruiters/companies referencing the profile).
   configure and build perform **no network access** (hard requirement — constrained
   egress environment). No `FetchContent`, no downloads.
 - **NFR-06 Estimation honesty** — the estimator is calibrated against a reference
-  tokenizer on the fixture corpus before v0.1.0; measured mean absolute error is
-  recorded in the Design Document §4.6. Until then, no numeric accuracy claim.
+  tokenizer on a representative first-party corpus before v0.1.0; the constants
+  and measured mean absolute error are recorded in the Design Document §4.6.
+  Outputs keep the `est.` suffix; no numeric accuracy claim is made.
 - **NFR-07 Determinism** — identical inputs and flags produce byte-identical bundles
   on the same platform, and identical bundles across platforms for `/`-safe content.
   No locale-, address-, or hash-order-dependent output.
 - **NFR-08 Robustness** — never executes packed content; no shell interpolation of
   user paths in spawned commands; pathological inputs (huge files, symlink loops,
   hostile names) terminate with a clean error, not a hang or crash.
-- **NFR-09 Code budget** — own source ≤ 1,800 LOC (vendor and tests excluded).
-  Exceeding a module budget (design §2.2) triggers a design review, not more code.
+- **NFR-09 Code budget** — own source (`src/*.c` + `src/*.h` physical lines,
+  vendor and tests excluded) ≤ 2,000 LOC. Exceeding a module budget (design §2.2)
+  triggers a design review, not more code. (Raised from 1,800 at the M2 review to
+  cover the planned `config.c`; see design §12.)
 - **NFR-10 Documentation** — every flag and command appears in both `--help` and the
   README; requirements changes update this document in the same commit.
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0

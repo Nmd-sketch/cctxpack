@@ -38,18 +38,26 @@ Each stage is a pure function over a growing context struct where practical
 
 ### 2.2 Modules & LOC budgets (own code; vendor/tests excluded)
 
-| Module | Responsibility | LOC cap | Unit tests |
-|---|---|---|---|
-| `src/main.c` | command dispatch, version | 100 | e2e smoke |
-| `src/cli.c` | getopt wrapper, validation, `--help` text | 200 | `test_cli.c` |
-| `src/config.c` | `.cctxpack.json` load (cJSON), precedence merge | 150 | `test_config.c` |
-| `src/files.c` | `git ls-files` runner, fallback walker, glob matcher | 250 | `test_files.c` |
-| `src/read.c` | open/read, binary sniff, size caps, truncation | 130 | `test_read.c` |
-| `src/tokens.c` | heuristic estimator | 120 | `test_tokens.c` |
-| `src/pack.c` | ordering, budget fit, report assembly | 250 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer | 350 | `test_format.c` |
-| `src/util.c` | strbuf, `/`-normalization, UTF-8→wide path open | 200 | `test_util.c` |
-| **total** | | **≤ 1,800** | |
+LOC = physical lines (`wc -l`), blanks and comments included. The cap is the
+review threshold (P1); the M2 column records the measurement at the M2 code
+review (2026-10-16), where caps were revised to measured value + ~15% headroom.
+
+| Module | Responsibility | LOC cap | LOC (M2) | Unit tests |
+|---|---|---|---|---|
+| `src/main.c` | command dispatch, version | 100 | 30 | e2e smoke |
+| `src/cli.c` | getopt wrapper, flag validation, path-operand resolution, `--help` text | 400 | 370 | `test_cli.c` |
+| `src/config.c` | `.cctxpack.json` load (cJSON), precedence merge | 200 | – (M3) | `test_config.c` |
+| `src/files.c` | `git ls-files` runner, fallback walker, strlist, sort | 350 | 320 | `test_files.c` |
+| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | `test_files.c` |
+| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | `test_read.c` |
+| `src/tokens.c` | calibrated heuristic estimator | 120 | 30 | `test_tokens.c` |
+| `src/pack.c` | ordering, budget fit, report assembly | 250 | 239 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer | 350 | 170 | `test_format.c` |
+| `src/util.c` | strbuf, `str_dup`, `/`-normalization, UTF-8→wide path open | 250 | 181 | `test_util.c` |
+| **total** | | **≤ 2,000** | 1,646 (`.c`) / 1,793 (`.c`+`.h`) | |
+
+`glob.c` was split out of `files.c` so pattern matching (independently
+testable) stays separate from filesystem/git I/O.
 
 Vendored libraries live in their own tree, fully separated from our code:
 `vendor/cjson/` (cJSON, MIT), `vendor/getopt/` (NetBSD getopt/getopt_long,
@@ -102,24 +110,30 @@ else:              recursive walk, skip .git/, no dir-symlink recursion
 filter:            --include (if set) then --exclude
 sort:              FR-019 order
 ```
-Git runs via `popen` with a **fixed command string**; user paths pass through a
-validator that rejects shell metacharacters (NFR-08) rather than escaping them.
+Git runs via `popen` with a **fixed command string** (`git rev-parse
+--is-inside-work-tree`, then `git ls-files -c -o --exclude-standard -z`). The
+child process `chdir`s into the pack root and the caller's cwd is restored
+afterward, so no user path is ever interpolated into a shell command; NFR-08 is
+satisfied by construction rather than by a metacharacter validator.
 
 ### 4.2 Budget fitting (deliberately simple, not clever)
 ```
-reserve  = est(header) + est(full tree upper bound)      # conservative
+reserve   = est(header) + est(full tree upper bound)      # conservative
 remaining = budget - reserve
 for f in sorted candidates:
-    e = est(f)
-    if e <= remaining:        include whole; remaining -= e
-    elif max_file_tokens set and e > max_file_tokens and min slice fits:
-                              include truncated; remaining -= slice
-    else:                     exclude (reason: over budget)
-if nothing included that fits the reserve: exit 3
+    e = est(f)          # f is already read, and already truncated if
+                        # --max-file-tokens applied (see 4.4)
+    if e <= remaining:  include whole; remaining -= e
+    else:               exclude (reason: over budget)
+if nothing fits the reserve: exit 3
 ```
 Conservative reservation keeps the invariant (FR-007) trivially true; the cost is
 minor unused slack. Alternatives (iterative shrink-until-fits) considered and
 rejected as not worth the complexity for v1.
+
+Truncation is applied when each file is read (4.4), not during fitting, so the
+fit only ever compares final, already-truncated estimates — one pass, no
+re-reading. A file excluded here is reported with its reason.
 
 ### 4.3 Report assembly
 Straightforward counting alongside 4.2: included/truncated/excluded-with-reason.
@@ -127,22 +141,50 @@ Auto-rendered whenever `--budget` is set (the report is the product's
 differentiator); `--report` forces it when no budget is given.
 
 ### 4.4 Binary sniff & truncation
-- Sniff: read first 8192 bytes; any NUL → binary. Placeholder line:
-  `` `«binary: <path> (<N> bytes)»` `` (exact text finalized with format goldens).
-- Truncation: cut at the last newline before the cap; marker line:
-  `` `… [truncated at <N> est. tokens]` ``.
+- Sniff: scan the first `min(len, 8192)` bytes; any NUL → binary. Placeholder line:
+  `` `«binary: <path> (<N> bytes)»` ``.
+- Read cap: at most 4 MB per file regardless of flags; if hit, the content is cut
+  and the marker `` `… [truncated at <N> byte read cap]` `` is appended.
+- `--max-file-tokens N`: cut at the last newline before the estimated cap, keeping
+  the trailing newline, then append the marker `` `… [truncated at <N> est. tokens]` ``.
 
 ### 4.5 Tree renderer
 Sorted paths, two-space indentation, **plain ASCII** connectors (`+--`, `|  `);
 content = included files only. A unicode box-drawing option is post-v1.
 
-### 4.6 Token estimator (spec + calibration policy)
-- Input per file: bytes `B`, UTF-8 chars `C`, lines `L`.
-- v1 formula: to be fixed during M2 calibration; candidate family
-  `est = ceil((C + α·L) / β)` with α, β fitted on the fixture corpus.
-- Calibration: run a reference tokenizer (tiktoken, if installable locally) over the
-  fixture corpus; record formula, α/β, and mean absolute error here before v0.1.0.
-  Until recorded: outputs carry `est.` labels and README makes no numeric claim.
+### 4.6 Token estimator (spec + calibration record)
+- Input per file: UTF-8 code points `C` and newlines `L`. Bytes/`B` is not used
+  (byte length is a poor proxy across UTF-8 and ASCII).
+- Formula: `est = ceil((C + α·L) / β)`.
+- **Calibrated constants (2026-10-16): α = 3.5, β = 3.8.** Because α and β are
+  exact rationals (7/2 and 19/5), the ceiling is evaluated in integer arithmetic:
+  `est = ceil((10·C + 35·L) / 38)`, which is bit-identical on every platform (P4)
+  and is what `src/tokens.c` implements.
+- **Corpus**: the repository's 41 first-party text files (source, tests, docs,
+  tools, root; 120,685 bytes). Vendored third-party code is excluded: its token
+  density is unrepresentative and it dominated the token mass.
+- **Reference tokenizer**: tiktoken `cl100k_base` (GPT-4/3.5), cross-checked on
+  `o200k_base` (GPT-4o).
+- **Fit**: unweighted least squares `T = p·C + q·L` gives α = 3.403, β = 3.856
+  (cl100k) and α = 3.615, β = 3.865 (o200k). Rounded to α = 3.5, β = 3.8; β is
+  rounded *down*, biasing the estimate ~2% high (the safe direction for a budget).
+- **Measured error at α = 3.5, β = 3.8**:
+  - cl100k: MAE **41.9 tokens/file**, median rel. err 5.9 %, p90 25.0 %,
+    11/41 files under-estimated, worst single-file under-count 5.94 %
+    (`src/util.c`), corpus aggregate **+2.07 %**.
+  - o200k: MAE 40.9, median 5.8 %, p90 25.0 %, worst under-count 6.58 %,
+    aggregate +1.58 %.
+- **Reproduce**: `python tools/calibrate_tokens.py --all-encodings
+  --exclude-prefix vendor/ --alpha 3.5 --beta 3.8 --show-worst`
+- **Limitations**: this is a heuristic, not a tokenizer. Per-file error is
+  typically single-digit percent but reaches ~25 % on short or unusually dense
+  files; atypical (e.g. dense vendored) text is over-counted. Outputs therefore
+  keep the `est.` label and the README makes no precise claim. An exact BPE
+  tokenizer is the post-v1 option (D-05).
+
+The fitting invariant (the bundle's own estimate never exceeds the sum of the
+part estimates counted while fitting) holds because `est` is the ceiling of an
+additive linear form, and is checked by `test_tokens.c`.
 
 ## 5. Output format contracts (grammar level)
 
@@ -173,8 +215,15 @@ JSON and to a small tested escaper for the others. Final goldens pin the exact b
 - **L1 unit** — per-module greatest.h suites (glob matrix, estimator goldens, config
   precedence, fit invariants: output ≤ budget; include/exclude inverses; binary
   sniff; path normalization both separators).
-- **L2 golden e2e** — CTest script runs the built binary against
-  `tests/fixtures/repo` across the flag matrix; byte-compare with `tests/golden/`.
+- **L2 e2e** — the CTest `unit` run also executes the real binary (`$<TARGET_FILE:cctxpack>`)
+  against `tests/fixtures/repo` covering pack, budget, determinism, `-o` guard, and
+  usage errors, asserting on the emitted bundle (substrings + the budget invariant)
+  and on exit codes. Standalone golden files are not used; the fixture repo is the
+  golden *input*. Git-ignore semantics are proved by a throwaway work tree the test
+  creates at runtime (`git init` + one tracked, one ignored file), so the check does
+  not depend on the enclosing repository and degrades to `SKIP` when git is absent.
+  All e2e artifacts go to a `ctx_e2e_tmp/` scratch dir created and removed around the
+  suite, so runs never leak files into the source tree.
 - **L3 invariants** — pack twice, byte-compare (determinism, NFR-07); budget never
   exceeded for random budgets on the fixture corpus (in C, seeded PRNG).
 - **L4 platform CI** — matrix: windows-msvc (Ninja), windows-mingw (msys2 action),
@@ -226,5 +275,25 @@ Resolved 2026-10-16 (owner decisions):
 - Tree: plain ASCII from day one. `diff`: unstaged default + `--staged`.
 - `count --format json` stays in v1 (FR-011). License MIT. Name: **cctxpack**.
 
+Resolved 2026-10-16 (M2 code review):
+- **Estimator constants α = 3.5, β = 3.8**, evaluated as `ceil((10C+35L)/38)` in
+  integer arithmetic for cross-platform determinism. Full record in 4.6.
+- **LOC caps revised** to measured values + ~15 % headroom and the total ceiling
+  raised 1,800 → 2,000 (to cover the not-yet-written `config.c` and the `glob.c`
+  extraction). Rationale: pre-implementation estimates under-counted the flat
+  CLI/path-handling and walker code; no real complexity was added. See 2.2.
+- **`glob.c` extracted** from `files.c` (separate, independently testable
+  concern: pattern matching vs filesystem I/O).
+- **git discovery** uses chdir + fixed command strings (no path interpolation),
+  replacing the metacharacter validator in the earlier draft (4.1).
+- **Truncation moved to the read stage** (4.4), keeping budget fitting single-pass
+  (4.2).
+- **Path-argument semantics**: 0 args → cwd; 1 directory → that root; 1 file →
+  its dir + exact-file filter; ≥2 args → cwd root with prefix/exact filters;
+  absolute operands rejected in multi-arg mode (exit 2).
+- **Unimplemented v1.0 surface** (`count`, `tree`, `diff`, `--format` ≠ md,
+  `--sort` ≠ name, `--query`, `--clipboard`) is recognized and exits 2 with a
+  "planned M3/M4" message rather than being silently ignored.
+
 Remaining open (implementation-time, no design impact):
-1. Estimator formula α/β calibration and recorded MAE (M2, §4.6).
+1. None for M2.
