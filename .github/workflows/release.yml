@@ -1,0 +1,110 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-msvc
+            os: windows-latest
+            cc: cl
+            bin: cctxpack-windows-x64-msvc.exe
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            bin: cctxpack-linux-x64
+          - name: macos-clang
+            os: macos-latest
+            cc: clang
+            bin: cctxpack-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        env:
+          CC: ${{ matrix.cc }}
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Collect binary
+        shell: bash
+        run: |
+          if [[ -f build/Release/cctxpack.exe ]]; then
+            src=build/Release/cctxpack.exe
+          elif [[ -f build/cctxpack.exe ]]; then
+            src=build/cctxpack.exe
+          else
+            src=build/cctxpack
+          fi
+          cp "$src" "${{ matrix.bin }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.bin }}
+
+  build-mingw:
+    name: windows-mingw
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build
+
+      - name: Collect binary
+        shell: msys2 {0}
+        run: cp build/cctxpack.exe cctxpack-windows-x64-mingw.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-mingw
+          path: cctxpack-windows-x64-mingw.exe
+
+  publish:
+    needs: [build, build-mingw]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
