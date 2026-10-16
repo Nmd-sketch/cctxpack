@@ -37,6 +37,12 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
+    # Strict ISO mode (-std=c23) hides POSIX declarations on glibc (popen/
+    # pclose, lstat, dirent d_type, getcwd).  Ask for the default feature set.
+    # Inert on Windows and Apple toolchains.
+    if(NOT WIN32)
+        add_compile_definitions(_DEFAULT_SOURCE)
+    endif()
 endif()
 
 if(MINGW)

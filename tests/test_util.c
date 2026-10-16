@@ -2,6 +2,8 @@
 
 #include "util.h"
 
+#include <stdlib.h>
+
 TEST strbuf_append_basic(void)
 {
     strbuf sb;
@@ -60,6 +62,48 @@ TEST path_normalize_mixed_and_empty(void)
     PASS();
 }
 
+TEST path_normalize_lexical(void)
+{
+    static const struct { const char *in; const char *want; } cases[] = {
+        { "a/./b", "a/b" },
+        { "a//b", "a/b" },
+        { "a/././b//c", "a/b/c" },
+        { "./a", "a" },
+        { "./", "." },
+        { ".", "." },
+        { "", "" },
+        { "a/", "a" },
+        { "a/b/..", "a" },
+        { "a/../b", "b" },
+        { "../a", "../a" },
+        { "/a/b/..", "/a" },
+        { "/a/../..", "/" },
+        { "/", "/" },
+        { "src\\main.c", "src/main.c" },
+        { ".hidden/x", ".hidden/x" },
+    };
+    for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%s", cases[k].in);
+        path_normalize(buf);
+        ASSERT_STR_EQ(cases[k].want, buf);
+    }
+    PASS();
+}
+
+TEST path_abs_collapses_dot_segments(void)
+{
+    /* Regression: the overwrite guard compares absolute paths, so "./x" and
+       "x" must resolve identically on every platform. */
+    char *a = path_abs("./cctxpack_norm_probe");
+    char *b = path_abs("cctxpack_norm_probe");
+    ASSERT(a != NULL && b != NULL);
+    ASSERT_STR_EQ(b, a);
+    free(a);
+    free(b);
+    PASS();
+}
+
 SUITE(util_suite)
 {
     RUN_TEST(strbuf_append_basic);
@@ -67,4 +111,6 @@ SUITE(util_suite)
     RUN_TEST(strbuf_appendf_formats);
     RUN_TEST(path_normalize_backslashes);
     RUN_TEST(path_normalize_mixed_and_empty);
+    RUN_TEST(path_normalize_lexical);
+    RUN_TEST(path_abs_collapses_dot_segments);
 }

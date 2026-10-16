@@ -106,14 +106,19 @@ static int parse_size(const char *s, size_t *out)
 static void strip_arg(char *p)
 {
     path_normalize(p);
-    size_t len = strlen(p);
-    while (len > 1 && p[len - 1] == '/')
-        p[--len] = '\0';
-    size_t off = 0;
-    while (p[off] == '.' && p[off + 1] == '/')
-        off += 2;
-    if (off)
-        memmove(p, p + off, strlen(p + off) + 1);
+}
+
+/* Normalize a glob and append it, without touching the (possibly read-only)
+ * argv string.  Returns 0, or -1 on allocation failure. */
+static int push_norm(strlist *l, const char *arg)
+{
+    char *g = str_dup(arg);
+    if (!g)
+        return -1;
+    path_normalize(g);
+    int rc = strlist_push(l, g);
+    free(g);
+    return rc;
 }
 
 static int is_abs_path(const char *p)
@@ -291,8 +296,7 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
                 *exit_code = usage_error("empty --include glob", NULL);
                 return CLI_EXIT;
             }
-            path_normalize(optarg);
-            if (strlist_push(&o->include, optarg) != 0) {
+            if (push_norm(&o->include, optarg) != 0) {
                 *exit_code = oom();
                 return CLI_EXIT;
             }
@@ -302,8 +306,7 @@ cli_action cli_parse(int argc, char **argv, pack_opts *o, int *exit_code)
                 *exit_code = usage_error("empty --exclude glob", NULL);
                 return CLI_EXIT;
             }
-            path_normalize(optarg);
-            if (strlist_push(&o->exclude, optarg) != 0) {
+            if (push_norm(&o->exclude, optarg) != 0) {
                 *exit_code = oom();
                 return CLI_EXIT;
             }

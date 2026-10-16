@@ -45,7 +45,7 @@ review (2026-10-16), where caps were revised to measured value + ~15% headroom.
 | Module | Responsibility | LOC cap | LOC (M2) | Unit tests |
 |---|---|---|---|---|
 | `src/main.c` | command dispatch, version | 100 | 30 | e2e smoke |
-| `src/cli.c` | getopt wrapper, flag validation, path-operand resolution, `--help` text | 400 | 370 | `test_cli.c` |
+| `src/cli.c` | getopt wrapper, flag validation, path-operand resolution, `--help` text | 430 | 373 | `test_cli.c` |
 | `src/config.c` | `.cctxpack.json` load (cJSON), precedence merge | 200 | – (M3) | `test_config.c` |
 | `src/files.c` | `git ls-files` runner, fallback walker, strlist, sort | 350 | 320 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | `test_files.c` |
@@ -53,8 +53,12 @@ review (2026-10-16), where caps were revised to measured value + ~15% headroom.
 | `src/tokens.c` | calibrated heuristic estimator | 120 | 30 | `test_tokens.c` |
 | `src/pack.c` | ordering, budget fit, report assembly | 250 | 239 | `test_pack.c` |
 | `src/format.c` | md/xml/json/txt emitters, tree renderer | 350 | 170 | `test_format.c` |
-| `src/util.c` | strbuf, `str_dup`, `/`-normalization, UTF-8→wide path open | 250 | 181 | `test_util.c` |
-| **total** | | **≤ 2,000** | 1,646 (`.c`) / 1,793 (`.c`+`.h`) | |
+| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open | 280 | 242 | `test_util.c` |
+| **total** | | **≤ 2,000** | 1,710 (`.c`) / 1,857 (`.c`+`.h`) | |
+
+The 2,000 ceiling counts first-party production lines only. At 1,857 the
+planned M3 `config.c` must stay near its 140-line estimate to fit; if it does
+not, the ceiling is revisited deliberately rather than by drift.
 
 `glob.c` was split out of `files.c` so pattern matching (independently
 testable) stays separate from filesystem/git I/O.
@@ -67,6 +71,12 @@ Vendored files are never modified (portability shims are additive headers).
 
 ### 2.3 Data contracts between stages
 - Paths are `/`-normalized, relative to the pack root, from discovery onward.
+- `path_normalize()` is lexical: it converts both separators to `/`, collapses
+  repeated slashes, drops `.` segments, resolves `..` against the preceding
+  segment, and drops a trailing slash. A leading `/` (or the `//` of a UNC path,
+  Windows only) and a `C:` drive prefix are preserved; `.` stays `.` and `""`
+  stays empty. Symbolic links are never resolved. Because it always writes, it is
+  only called on caller-owned buffers (never `argv` directly).
 - The candidate list is sorted (FR-019) before fitting; nothing downstream reorders.
 - `read` returns either content, `binary(size)`, `truncated(content)`, or an error
   (fail-fast per D-10).
@@ -227,8 +237,8 @@ JSON and to a small tested escaper for the others. Final goldens pin the exact b
 - **L3 invariants** — pack twice, byte-compare (determinism, NFR-07); budget never
   exceeded for random budgets on the fixture corpus (in C, seeded PRNG).
 - **L4 platform CI** — matrix: windows-msvc (Ninja), windows-mingw (msys2 action),
-  ubuntu gcc + clang, macos clang. Git-dependent tests (ls-files, diff) create a
-  temp repo at setup or skip via CTest `SKIP_RETURN_CODE` when git is absent.
+  ubuntu gcc + clang, macos clang. Git-dependent tests create their own temp
+  repository and `SKIP` (greatest `SKIPm`) when git is absent.
 - Windows-specific: UTF-8 filename pack test (exercises wide-path open in util).
 
 ## 8. Build & release
@@ -236,6 +246,9 @@ JSON and to a small tested escaper for the others. Final goldens pin the exact b
 - One target (`cctxpack`) + tests (added M1). Version single-sourced from
   `project(VERSION …)` via `target_compile_definitions(CTX_VERSION=…)`.
 - C standard detection loop lives in `CMakeLists.txt` (D-01), status printed.
+- Strict ISO mode (`-std=c23`) hides POSIX declarations on glibc, so non-Windows
+  builds define `_DEFAULT_SOURCE` (needed for `popen`, `lstat`, dirent `d_type`,
+  `getcwd`). The macro is inert on Windows and Apple toolchains.
 - Release: tag `v*` → CI builds 4 platform binaries, strips, attaches with SHA-256
   checksums. No CPack in v1.
 
@@ -294,6 +307,15 @@ Resolved 2026-10-16 (M2 code review):
 - **Unimplemented v1.0 surface** (`count`, `tree`, `diff`, `--format` ≠ md,
   `--sort` ≠ name, `--query`, `--clipboard`) is recognized and exits 2 with a
   "planned M3/M4" message rather than being silently ignored.
+- **Path normalization is lexical** (`path_normalize`, 2.3): it now also drops
+  `.`/empty segments and resolves `..`, so `./x` and `x` compare equal on POSIX.
+  This fixed the `-o` overwrite guard on macOS, where the guard's absolute path
+  (`join(root=".", "README.md")` → `"./README.md"`) did not match the input's
+  absolute path. Because the function always writes, it is never applied to
+  `argv` directly — globs are normalized on a duplicate (`push_norm`), which also
+  removes a latent write-to-`argv` (crash on read-only literals).
+- **`_DEFAULT_SOURCE`** is defined for non-Windows builds (`-std=c23` hides
+  POSIX declarations on glibc); Windows/MinGW and Apple toolchains are unaffected.
 
 Remaining open (implementation-time, no design impact):
 1. None for M2.

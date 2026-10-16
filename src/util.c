@@ -79,12 +79,73 @@ int strbuf_appendf(strbuf *sb, const char *fmt, ...)
     return 0;
 }
 
+/* Lexically normalize a path in place: convert separators to '/', collapse
+ * repeated slashes, drop "." segments, resolve ".." against the preceding
+ * segment, and drop any trailing slash.  A leading '/' (or "//" on Windows,
+ * for UNC paths) and a "C:" drive prefix are preserved.  "." stays "." and an
+ * empty string stays empty.  Purely lexical: symbolic links are not resolved. */
 void path_normalize(char *p)
 {
-    for (; *p; p++) {
-        if (*p == '\\')
-            *p = '/';
+    size_t len = strlen(p);
+    size_t root = 0;
+    size_t i = 0;
+    size_t w = 0;
+
+    for (size_t k = 0; k < len; k++)
+        if (p[k] == '\\')
+            p[k] = '/';
+
+    if (p[0] == '/') {
+#ifdef _WIN32
+        root = (len > 1 && p[1] == '/') ? 2 : 1;
+#else
+        root = 1;
+#endif
+        while (w < root)
+            p[w++] = '/';
+        i = root;
+    } else if (len >= 2 && p[1] == ':') {
+        p[w++] = p[0];
+        p[w++] = ':';
+        i = 2;
+        if (i < len && p[i] == '/') {
+            p[w++] = '/';
+            i++;
+        }
+        root = w;
     }
+
+    while (i < len) {
+        while (i < len && p[i] == '/')
+            i++;
+        size_t start = i;
+        while (i < len && p[i] != '/')
+            i++;
+        size_t n = i - start;
+        if (n == 0 || (n == 1 && p[start] == '.'))
+            continue;
+        if (n == 2 && p[start] == '.' && p[start + 1] == '.') {
+            if (w > root) {
+                while (w > root && p[w - 1] != '/')
+                    w--;
+                if (w > root)
+                    w--;
+            } else if (root == 0) {
+                if (w > 0)
+                    p[w++] = '/';
+                p[w++] = '.';
+                p[w++] = '.';
+            }
+            continue;
+        }
+        if (w > root)
+            p[w++] = '/';
+        memmove(p + w, p + start, n);
+        w += n;
+    }
+    if (w == 0 && len > 0)
+        p[w++] = '.';
+    p[w] = '\0';
 }
 
 char *str_dup(const char *s)
