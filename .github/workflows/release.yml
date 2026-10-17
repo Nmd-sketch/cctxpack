@@ -1,11 +1,22 @@
 name: release
 
+# Cut a release by pushing a v* tag.  ci.yml only runs on main and PRs, so every
+# matrix job below also configures, builds and tests before packaging.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+  VER: ${{ github.ref_name }}
 
 jobs:
   build:
@@ -15,52 +26,79 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows-msvc
-            os: windows-latest
-            cc: cl
-            bin: cctxpack-windows-x64-msvc.exe
-          - name: linux-gcc
-            os: ubuntu-latest
+          - name: linux-x86_64
+            os: ubuntu-22.04
             cc: gcc
-            bin: cctxpack-linux-x64
-          - name: macos-clang
+            asset: cctxpack-linux-x86_64.tar.gz
+            stage: tar
+            strip: s
+          - name: macos-x86_64
+            os: macos-13
+            cc: clang
+            asset: cctxpack-macos-x86_64.tar.gz
+            stage: tar
+            strip: all
+          - name: macos-arm64
             os: macos-latest
             cc: clang
-            bin: cctxpack-macos-arm64
+            asset: cctxpack-macos-arm64.tar.gz
+            stage: tar
+            strip: all
+          - name: windows-x64
+            os: windows-latest
+            cc: cl
+            asset: cctxpack-windows-x64.zip
+            stage: zip
+            strip: false
+
     steps:
       - uses: actions/checkout@v5
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.cc == 'gcc' && '-static' || '' }}"
         env:
           CC: ${{ matrix.cc }}
 
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Collect binary
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Stage
         shell: bash
         run: |
-          if [[ -f build/Release/cctxpack.exe ]]; then
-            src=build/Release/cctxpack.exe
-          elif [[ -f build/cctxpack.exe ]]; then
-            src=build/cctxpack.exe
-          else
-            src=build/cctxpack
+          mkdir -p dist/pkg
+          cp "build/Release/cctxpack${{ runner.os == 'Windows' && '.exe' || '' }}" dist/pkg/ 2>/dev/null \
+            || cp "build/cctxpack${{ runner.os == 'Windows' && '.exe' || '' }}" dist/pkg/
+          cp LICENSE README.md dist/pkg/
+          if [ "${{ matrix.strip }}" != "false" ]; then
+            strip "${{ matrix.strip }}" dist/pkg/cctxpack
           fi
-          cp "$src" "${{ matrix.bin }}"
+          cd dist/pkg && ls -la
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ matrix.stage }}" = "tar" ]; then
+            tar czf "${{ matrix.asset }}" pkg
+          else
+            7z a -tzip -mx=9 "${{ matrix.asset }}" "pkg/*" >/dev/null
+          fi
+          ls -la "${{ matrix.asset }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.bin }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
 
   build-mingw:
     name: windows-mingw
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -78,33 +116,63 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build
 
-      - name: Collect binary
+      - name: Test
         shell: msys2 {0}
-        run: cp build/cctxpack.exe cctxpack-windows-x64-mingw.exe
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Stage and package
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist/pkg
+          cp build/cctxpack.exe dist/pkg/
+          cp LICENSE README.md dist/pkg/
+          strip dist/pkg/cctxpack.exe || true
+          cd dist && 7z a -tzip -mx=9 cctxpack-windows-x64-mingw.zip "pkg/*" >/dev/null
+          ls -la *.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-mingw
-          path: cctxpack-windows-x64-mingw.exe
+          path: dist/cctxpack-windows-x64-mingw.zip
+          if-no-files-found: error
 
-  publish:
+  release:
+    name: publish
     needs: [build, build-mingw]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          merge-multiple: true
 
       - name: Checksums
-        working-directory: dist
-        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --generate-notes \
-          || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          {
+            echo "## cctxpack $VER"
+            echo
+            echo "Token-budgeted repo packer. Single static binary, no runtime deps."
+            echo
+            echo "Verify a download with \`sha256sum -c SHA256SUMS\`."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$TAG" \
+            --title "cctxpack $VER" \
+            --notes-file notes.md \
+            *.tar.gz *.zip SHA256SUMS \
+          || gh release upload "$TAG" *.tar.gz *.zip SHA256SUMS --clobber
+          echo "--- published ---"
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'

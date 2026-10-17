@@ -1,0 +1,159 @@
+.TH CCTXPACK 1 "2026-10-17" "cctxpack 0.1.0" "User Commands"
+.SH NAME
+cctxpack \- pack a repository into a single token-budgeted LLM context bundle
+.SH SYNOPSIS
+.B cctxpack
+.RI [ pack ]
+.RI [ paths ...]
+.br
+.B cctxpack count
+.RI [ paths ...]
+.br
+.B cctxpack tree
+.RI [ path ]
+.br
+.B cctxpack diff
+.RB [ \-\-staged ]
+.SH DESCRIPTION
+.B cctxpack
+collects source files from a directory or git work tree and renders them as a
+single bundle suitable for pasting into an LLM. Discovery respects
+.BR .gitignore ;
+inside a work tree untracked-but-not-ignored files are included.
+.PP
+Files are ordered deterministically (byte-wise), then fitted to an optional
+token budget. Per-file token counts are
+.IR estimates ,
+not exact tokenizer counts, and are labelled as such in every output format.
+.SH COMMANDS
+.TP
+.B pack
+Pack files into a bundle. This is the default when no command is given.
+.TP
+.B count
+Print a per-file bytes/lines/tokens table instead of a bundle.
+.TP
+.B tree
+Render the directory tree only.
+.TP
+.B diff
+Pack files changed versus HEAD. Use
+.B \-\-staged
+for the index instead.
+.SH OPTIONS
+.TP
+.B \-\-budget N
+Token budget (estimated). Auto-enables the report.
+.TP
+.BI \-\-format " md|xml|json|txt"
+Output format. Default
+.BR md .
+.TP
+.BI \-\-include " GLOB"
+Include only paths matching GLOB. Repeatable.
+.TP
+.BI \-\-exclude " GLOB"
+Exclude paths matching GLOB. Repeatable.
+.TP
+.BI \-\-max\-file\-tokens " N"
+Truncate files above N estimated tokens.
+.TP
+.BI \-\-sort " name|mtime|size"
+Ordering. Default
+.BR name .
+.TP
+.BI \-\-query " TEXT"
+Re-rank candidates by ASCII case-insensitive keyword overlap in the path.
+Basename matches count double. Lexical, not semantic.
+.TP
+.B \-\-clipboard
+Copy the bundle to the clipboard (Windows only). Cannot be combined with
+.BR \-o .
+.TP
+.B \-\-staged
+With
+.BR diff ,
+use the index instead of the work tree.
+.TP
+.BR \-\-tree ", " \-\-no\-tree
+Include or omit the directory tree. On by default, off for
+.BR diff .
+.TP
+.BI \-o " PATH"
+Write to PATH instead of stdout.
+.TP
+.B \-\-report
+Force the fitting report.
+.TP
+.B \-\-config
+Print the resolved configuration and exit.
+.TP
+.B \-h, \-\-help
+Show usage.
+.TP
+.B \-V, \-\-version
+Show version.
+.SH CONFIGURATION
+The nearest
+.B .cctxpack.json
+at or above the current directory is merged in, bounded by the git work-tree
+root (current directory only outside a work tree). Recognised keys:
+.BR budget ", " format ", " include ", " exclude ", " max_file_tokens ", " tree .
+Command-line flags always win. An invalid or wrongly-typed configuration is a
+usage error.
+.SH ENVIRONMENT
+.TP
+.B CTX_VOCAB_DIR
+Reserved for an optional partial vocabulary directory. Not used by this build.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+I/O, out-of-memory, or read failure.
+.TP
+.B 2
+Usage or configuration error, including unknown flags, bad values, invalid
+JSON, and
+.B diff
+outside a work tree.
+.TP
+.B 3
+Nothing fits the budget.
+.SH EXAMPLES
+.PP
+Pack the current repository:
+.PP
+.RS
+cctxpack . \-o context.md
+.RE
+.PP
+Pack a subsystem within a token budget:
+.PP
+.RS
+cctxpack src/parser \-\-budget 8000
+.RE
+.PP
+Pack only what changed, for review:
+.PP
+.RS
+cctxpack diff \-\-staged \-o review.md
+.RE
+.PP
+Find files relevant to a question first:
+.PP
+.RS
+cctxpack . \-\-query "http retry" \-\-budget 6000
+.RE
+.SH NOTES
+Token counts are produced by a script-aware heuristic estimator fitted against
+tiktoken. Aggregate error over a repository is roughly +10% to +25%; per-file
+error can reach \-26%. See
+.B docs/design-document.md
+section 4.6 in the source distribution for the calibration record.
+.SH SEE ALSO
+.BR git-ls-files (1),
+.BR tar (1)
+.SH LICENSE
+MIT. Copyright (c) 2026 Nmd-Sketch.

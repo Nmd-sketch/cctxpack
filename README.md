@@ -18,13 +18,49 @@ Pack a repository (or a subset) into a single, token-budgeted, LLM-ready context
 
 ### Install
 
-Download a prebuilt binary from [releases](https://github.com/Nmd-sketch/cctxpack/releases/latest) or build from source:
+Download a prebuilt binary from [releases](https://github.com/Nmd-sketch/cctxpack/releases/latest), or build from source:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 # binary at build/cctxpack (or build/Release/cctxpack.exe on Windows)
 ```
+
+<details>
+<summary>Linux, macOS, Windows install</summary>
+
+**Linux (static, no runtime deps):**
+
+```sh
+VERSION=0.1.0
+curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-linux-x86_64.tar.gz"
+sha256sum -c SHA256SUMS 2>/dev/null || sha256sum cctxpack-linux-x86_64.tar.gz
+tar xzf cctxpack-linux-x86_64.tar.gz
+sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
+```
+
+**macOS (Apple Silicon or Intel):**
+
+```sh
+VERSION=0.1.0
+curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-macos-arm64.tar.gz"
+tar xzf cctxpack-macos-arm64.tar.gz
+sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$VERSION = "0.1.0"
+Invoke-WebRequest "https://github.com/Nmd-sketch/cctxpack/releases/download/v$VERSION/cctxpack-windows-x64.zip" -OutFile cctxpack.zip
+Expand-Archive cctxpack.zip -DestinationPath .
+.\pkg\cctxpack.exe --version
+```
+
+Every release ships a `SHA256SUMS` file. Verify with `sha256sum -c SHA256SUMS`
+(Linux) or `Get-FileHash` (Windows).
+
+</details>
 
 ### Pack the current repo
 
