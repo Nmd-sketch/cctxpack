@@ -107,7 +107,7 @@ cctxpack discovers tracked/untracked files (respecting `.gitignore`), applies in
 |---|---|---|
 | Runtime | C (single native binary) | Node.js/TypeScript |
 | Dependencies | Vendored only (offline) | Node deps (npm) |
-| Token counting | script-aware heuristic, 8 per-language rates (**+11.6% aggregate**, safe direction on every non-ASCII class) | exact BPE (tiktoken `cl100k_base`) |
+| Token counting | script-aware heuristic, 8 per-language rates (**+10.8% aggregate / up to −26% per file**) | exact BPE (tiktoken `cl100k_base`) |
 | Formats | md, xml, json, txt | md (primary), xml/json/txt variants |
 | Git-aware | `diff`, `diff --staged` (NUL-split, worktree-aware) | No native diff mode |
 | Selection | Path-weighted `--query` + globs + sort (mtime/size/name) | Globs/ignore + some ordering |
@@ -122,30 +122,52 @@ fails the request.
 
 ### How accurate is `--budget`?
 
-Counts are **estimates** (`est.`), labelled as such everywhere. Measured against
-real `cl100k_base` / `o200k_base` counts, per content class:
+Counts are **estimates** (`est.`), labelled as such everywhere. There are **two
+different numbers**, and conflating them is how the previous version of this
+README ended up claiming "+0.61% accurate", which was wrong.
+
+**Aggregate — "how many tokens is this repo?"**
+
+| Corpus | Aggregate error | Files under-estimated |
+|---|---|---|
+| this repository (62 files) | **+10.8%** | 29% |
+| a C++ repo (99 files) | **+24.5%** | **1%** |
+
+**Per-file — "how many tokens is this file?"**
 
 | Content | Error vs real BPE |
 |---|---|
 | ASCII source (typical) | +5% median |
-| CJK (Chinese / Kanji / Hangul) | +32% median |
-| Accented Latin | +24% median |
-| Emoji | +24% median |
 | Cyrillic | +19% median |
-| Punctuation-dense ASCII | **up to −26%** (worst case: dense C) |
+| Emoji | +24% median |
+| Accented Latin | +24% median |
+| CJK (Chinese / Kanji / Hangul) | +32% median |
+| Punctuation-dense ASCII | **up to −26%** (worst: dense C) |
 | Dense macro code | up to +55% |
 
-On this repository end-to-end: **+11.6% aggregate**, worst single file −26%.
+Why aggregate is so much better than per-file: per-file errors are close to
+zero-mean, so they **cancel** across a repo — measured summed error is ~0.1% of
+the corpus total, against a 2.1% per-file spread. A budget set from the
+aggregate is reliable; a per-file number in `count` output is not, and is
+labelled as an estimate for that reason.
 
-Two things worth knowing:
+The per-file floor is not a modelling deficiency. Two text chunks with
+**identical** character-class, line-length, word-length and whitespace
+statistics differ by a median of ~8% and ~25% at p90 in true token count,
+because BPE merges common subwords — `the` is 1 token, `zqjx` is 3, at identical
+character rates. Recovering that needs the vocabulary, which is a 2.3 MB table
+we do not ship (see the design doc). Distinct-word-count features were measured
+and do nothing; the missing information is vocabulary *identity*, which no
+single-pass byte histogram can carry.
+
+Two more things worth knowing:
 
 - **We deliberately over-estimate** on non-ASCII content. The previous model
   charged every character the ASCII rate, which put CJK text **48% under** at the
   median and **86% under** at worst — so `--budget 100000` could really emit
   186,000 tokens and overflow the context window.
-- **The old "+0.61% accurate" figure was misleading.** It was a corpus *average*
-  dominated by ASCII files, which cancelled out real 30–70% failures on other
-  scripts. Per-class numbers are the honest metric, and that's what we publish.
+- **Binary files are not estimated.** A NUL byte in the first 8 KB marks a file
+  binary; cctxpack emits a placeholder carrying its path and byte size instead.
 
 Reproduce with `python tools/calibrate_tokens.py --compare`; full record in
 [design §4.6](docs/design-document.md).
