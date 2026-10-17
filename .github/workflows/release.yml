@@ -154,14 +154,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # merge-multiple is required: without it download-artifact@v4 nests each
+      # artifact as dist/<artifact-name>/<file>, and the checksum and upload
+      # steps below see no files at all in dist/.
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          merge-multiple: true
 
       - name: Checksums
         run: |
+          set -eu
           cd dist
-          sha256sum *.tar.gz *.zip > SHA256SUMS
+          ls -la
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish
@@ -185,8 +191,8 @@ jobs:
           gh release create "$TAG" \
             --title "cctxpack $VER" \
             --notes-file notes.md \
-            *.tar.gz *.zip SHA256SUMS \
-          || gh release upload "$TAG" *.tar.gz *.zip SHA256SUMS --clobber
+            ./*.tar.gz ./*.zip SHA256SUMS \
+          || gh release upload "$TAG" ./*.tar.gz ./*.zip SHA256SUMS --clobber
           echo "--- published ---"
           gh release view "$TAG" --json url --jq .url
           gh release view "$TAG" --json assets --jq '.assets[].name'
