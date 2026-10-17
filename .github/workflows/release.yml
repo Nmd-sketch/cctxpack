@@ -30,32 +30,31 @@ jobs:
             os: ubuntu-22.04
             cc: gcc
             asset: cctxpack-linux-x86_64.tar.gz
-            stage: tar
-            strip: s
-          - name: macos-x86_64
-            os: macos-13
-            cc: clang
-            asset: cctxpack-macos-x86_64.tar.gz
-            stage: tar
-            strip: all
-          - name: macos-arm64
+            linkflags: -static
+            osxarch: ""
+          # One runner, one fat binary: covers Apple Silicon and Intel instead of
+          # needing macos-13, whose Intel runner pool no longer schedules.
+          - name: macos-universal
             os: macos-latest
             cc: clang
-            asset: cctxpack-macos-arm64.tar.gz
-            stage: tar
-            strip: all
+            asset: cctxpack-macos-universal.tar.gz
+            linkflags: ""
+            osxarch: "x86_64;arm64"
           - name: windows-x64
             os: windows-latest
             cc: cl
             asset: cctxpack-windows-x64.zip
-            stage: zip
-            strip: false
+            linkflags: ""
+            osxarch: ""
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.cc == 'gcc' && '-static' || '' }}"
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linkflags }}"
+          -DCMAKE_OSX_ARCHITECTURES="${{ matrix.osxarch }}"
         env:
           CC: ${{ matrix.cc }}
 
@@ -68,25 +67,35 @@ jobs:
       - name: Stage
         shell: bash
         run: |
+          set -eu
           mkdir -p dist/pkg
-          cp "build/Release/cctxpack${{ runner.os == 'Windows' && '.exe' || '' }}" dist/pkg/ 2>/dev/null \
-            || cp "build/cctxpack${{ runner.os == 'Windows' && '.exe' || '' }}" dist/pkg/
-          cp LICENSE README.md dist/pkg/
-          if [ "${{ matrix.strip }}" != "false" ]; then
-            strip "${{ matrix.strip }}" dist/pkg/cctxpack
-          fi
-          cd dist/pkg && ls -la
-
-      - name: Package
-        shell: bash
-        run: |
-          cd dist
-          if [ "${{ matrix.stage }}" = "tar" ]; then
-            tar czf "${{ matrix.asset }}" pkg
+          if [ -f "build/Release/cctxpack.exe" ]; then
+            cp build/Release/cctxpack.exe dist/pkg/
           else
-            7z a -tzip -mx=9 "${{ matrix.asset }}" "pkg/*" >/dev/null
+            cp build/cctxpack dist/pkg/
           fi
-          ls -la "${{ matrix.asset }}"
+          cp LICENSE README.md docs/man1/cctxpack.1 dist/pkg/
+          # Plain `strip`, no flags: the flag set differs between GNU strip and
+          # Apple's, and `strip -s` / `strip all` both fail by treating the flag
+          # as an input filename.
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            strip dist/pkg/cctxpack || true
+          fi
+          ls -la dist/pkg
+
+      - name: Package (tar)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar czf "dist/${{ matrix.asset }}" -C dist pkg
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/pkg -DestinationPath "dist/${{ matrix.asset }}"
+
+      - name: Show asset
+        shell: bash
+        run: ls -la dist/*.tar.gz dist/*.zip 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -120,20 +129,22 @@ jobs:
         shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
 
+      # msys2 ships tar but not 7z, so the MinGW asset is a tarball too.
       - name: Stage and package
         shell: msys2 {0}
         run: |
+          set -eu
           mkdir -p dist/pkg
           cp build/cctxpack.exe dist/pkg/
-          cp LICENSE README.md dist/pkg/
+          cp LICENSE README.md docs/man1/cctxpack.1 dist/pkg/
           strip dist/pkg/cctxpack.exe || true
-          cd dist && 7z a -tzip -mx=9 cctxpack-windows-x64-mingw.zip "pkg/*" >/dev/null
-          ls -la *.zip
+          cd dist && tar czf cctxpack-windows-x64-mingw.tar.gz pkg
+          ls -la *.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-mingw
-          path: dist/cctxpack-windows-x64-mingw.zip
+          path: dist/cctxpack-windows-x64-mingw.tar.gz
           if-no-files-found: error
 
   release:
@@ -161,7 +172,9 @@ jobs:
           {
             echo "## cctxpack $VER"
             echo
-            echo "Token-budgeted repo packer. Single static binary, no runtime deps."
+            echo "Token-budgeted repo packer. Single binary, no runtime deps."
+            echo
+            echo "The macOS asset is a universal binary (x86_64 + arm64)."
             echo
             echo "Verify a download with \`sha256sum -c SHA256SUMS\`."
             echo
@@ -175,4 +188,5 @@ jobs:
             *.tar.gz *.zip SHA256SUMS \
           || gh release upload "$TAG" *.tar.gz *.zip SHA256SUMS --clobber
           echo "--- published ---"
-          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
+          gh release view "$TAG" --json url --jq .url
+          gh release view "$TAG" --json assets --jq '.assets[].name'

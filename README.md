@@ -39,12 +39,12 @@ tar xzf cctxpack-linux-x86_64.tar.gz
 sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 ```
 
-**macOS (Apple Silicon or Intel):**
+**macOS (universal — Apple Silicon and Intel):**
 
 ```sh
 VERSION=0.1.0
-curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-macos-arm64.tar.gz"
-tar xzf cctxpack-macos-arm64.tar.gz
+curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-macos-universal.tar.gz"
+tar xzf cctxpack-macos-universal.tar.gz
 sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 ```
 
@@ -57,8 +57,11 @@ Expand-Archive cctxpack.zip -DestinationPath .
 .\pkg\cctxpack.exe --version
 ```
 
+A second Windows build is available as `cctxpack-windows-x64-mingw.tar.gz`
+(MinGW, also static).
+
 Every release ships a `SHA256SUMS` file. Verify with `sha256sum -c SHA256SUMS`
-(Linux) or `Get-FileHash` (Windows).
+(Linux/macOS) or `Get-FileHash` (Windows).
 
 </details>
 
