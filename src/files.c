@@ -467,6 +467,35 @@ void files_apply_ignore(const char *root, strlist *paths)
     strlist_free(&pats);
 }
 
+char *files_git_commit(void)
+{
+    char *top = NULL;
+    if (files_git_top(&top) != 0)
+        return NULL;
+    char *saved = NULL;
+    char *buf = NULL;
+    size_t len = 0;
+    int rc = -1;
+    if (chdir_restore(top, &saved) == 0) {
+        rc = popen_run("git rev-parse --short=12 HEAD", &buf, &len);
+        chdir_back(saved);
+    }
+    free(top);
+    if (rc != 0) {
+        /* unborn HEAD (no commits yet) or git unavailable */
+        free(buf);
+        return NULL;
+    }
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'
+                          || buf[len - 1] == ' '))
+        buf[--len] = '\0';
+    if (len == 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
 /* Length of s up to a NUL, without relying on strnlen (MSVC portability). */
 static size_t span_len(const char *s, size_t max)
 {

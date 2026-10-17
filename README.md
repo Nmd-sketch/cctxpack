@@ -127,6 +127,18 @@ cctxpack . --format xml  -o bundle.xml
 cctxpack . --format txt  -o bundle.txt
 ```
 
+Every bundle starts with a **provenance manifest** — commit SHA, file count,
+content bytes, estimated tokens, and a digest identifying the exact file set:
+
+```markdown
+<!-- cctxpack-manifest commit=8125733d18ee files=9 bytes=4191 tokens=1242 digest=9d2ae02d631a65a0 -->
+```
+
+That matters most for agents: the consumer can say which snapshot it received
+and whether two bundles hold the same files. JSON gets a `"manifest"` object,
+XML attributes on `<context>`, txt a `manifest:` line. There is deliberately
+**no timestamp** — two runs over an unchanged tree are byte-identical.
+
 ### Count/take inventory
 
 ```sh

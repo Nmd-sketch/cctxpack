@@ -309,3 +309,14 @@ char *utf8_to_utf16le(const char *s, size_t len, size_t *out_len)
     *out_len = w;
     return (char *)out;
 }
+
+unsigned long long fnv1a64(unsigned long long h, const void *data, size_t n)
+{
+    const unsigned char *p = data;
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+

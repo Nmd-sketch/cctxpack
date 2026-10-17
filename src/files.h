@@ -42,6 +42,9 @@ int files_git_top(char **out);
  * (staged, unstaged and untracked); `staged` limits it to the index.  Deleted
  * paths are excluded.  Returns 0 with `top` set, FILES_NOGIT or FILES_ERR. */
 int files_git_status(int staged, strlist *out, char **top);
+/* Short SHA of HEAD, or NULL outside a work tree / when git fails.  Recorded
+ * in the bundle manifest so a consumer can identify which snapshot it got. */
+char *files_git_commit(void);
 /* Raw unified diff versus HEAD, or of the index when `staged`.  Caller owns
  * *out.  Returns 0 with `top` set, FILES_NOGIT or FILES_ERR. */
 int files_git_patch(int staged, char **out, size_t *out_len, char **top);

@@ -95,6 +95,7 @@ add_executable(cctxpack
     src/read.c
     src/tokens.c
     src/pack.c
+    src/score.c
     src/format.c
     src/util.c
 )

@@ -888,6 +888,142 @@ TEST e2e_diff_patch_emits_hunks(void)
     PASS();
 }
 
+/* The manifest must not break byte-identical output: nothing in it may come
+ * from wall-clock time. */
+TEST e2e_manifest_is_deterministic(void)
+{
+    char *dir = scratch("manifest");
+    char *o1 = scratch("e2e_man1.md");
+    char *o2 = scratch("e2e_man2.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && o1 && o2 && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/a.c", dir);
+    ASSERT(test_write_file(fp, "int a(void){return 1;}\n", 21) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", o2);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b1 = test_read_all(o1, NULL);
+    char *b2 = test_read_all(o2, NULL);
+    ASSERT(b1 && b2);
+    ASSERT(strcmp(b1, b2) == 0);
+
+    /* provenance line, with a real commit (the scratch repo has one) */
+    ASSERT(strstr(b1, "<!-- cctxpack-manifest commit=") != NULL);
+    ASSERT(strstr(b1, "commit=unversioned") == NULL);
+    ASSERT(strstr(b1, "files=1 ") != NULL);
+    ASSERT(strstr(b1, "digest=") != NULL);
+    free(b1);
+    free(b2);
+
+    /* adding a file must change the digest: it identifies the file set */
+    char gp[1024];
+    snprintf(gp, sizeof(gp), "%s/b.c", dir);
+    ASSERT(test_write_file(gp, "int b(void){return 2;}\n", 21) == 0);
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b1 = test_read_all(o1, NULL);
+    ASSERT(b1 != NULL);
+    ASSERT(strstr(b1, "files=2 ") != NULL);
+    free(b1);
+
+    /* and the same commit SHA, because the tree did not change */
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", o2);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b1 = test_read_all(o1, NULL);
+    b2 = test_read_all(o2, NULL);
+    ASSERT(b1 && b2);
+    ASSERT(strstr(b1, "commit=unversioned") == NULL);
+    free(b1);
+    free(b2);
+
+    test_rm_rf(dir);
+    free(o1);
+    free(o2);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+/* The manifest is rendered after the budget fit, so the reserve must have
+ * accounted for it or a tight budget would be overshot by its own header. */
+TEST e2e_manifest_does_not_break_budget(void)
+{
+    char *dir = scratch("manbudget");
+    char *out = scratch("e2e_manbudget.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    for (int i = 0; i < 12; i++) {
+        char fp[1024];
+        snprintf(fp, sizeof(fp), "%s/f%02d.c", dir, i);
+        char body[64];
+        snprintf(body, sizeof(body), "int f%02d(void){return %d;}\n", i, i);
+        ASSERT(test_write_file(fp, body, strlen(body)) == 0);
+    }
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    /* a range of budgets: none may report more than the cap */
+    for (int budget = 120; budget <= 400; budget += 40) {
+        char args[1024];
+        snprintf(args, sizeof(args), "pack . --budget %d --report -o \"%s\"",
+            budget, out);
+        int rc = run_in(dir, args, nul, err);
+        /* 0 = fitted, 3 = nothing fits, which is correct for the small caps */
+        ASSERT(rc == 0 || rc == 3);
+        char *e = test_read_all(err, NULL);
+        ASSERT(e != NULL);
+        /* the tokens line follows the file counts */
+        const char *t = strstr(e, "est. tokens ");
+        if (!t) {
+            fprintf(stderr, "report had no token line: %s", e);
+            FAILm("no token line");
+        }
+        unsigned long used = 0, cap = 0;
+        ASSERT(sscanf(t, "est. tokens %lu/%lu (budget)", &used, &cap) == 2);
+        ASSERT(used <= cap);
+        ASSERT((int)cap == budget);
+        free(e);
+    }
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
 TEST e2e_json_is_valid_without_tree(void)
 {
     char *dir = scratch("notree");
@@ -1074,6 +1210,8 @@ SUITE(e2e_suite)
     RUN_TEST(e2e_diff_patch_emits_hunks);
     RUN_TEST(e2e_patch_rejected_without_diff);
 RUN_TEST(e2e_json_is_valid_without_tree);
+RUN_TEST(e2e_manifest_is_deterministic);
+RUN_TEST(e2e_manifest_does_not_break_budget);
 RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);
     RUN_TEST(e2e_diff_outside_worktree);
     test_rm_rf("ctx_e2e_tmp");

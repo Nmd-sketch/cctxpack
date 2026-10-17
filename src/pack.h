@@ -2,6 +2,7 @@
 #define CTX_PACK_H
 
 #include "files.h"
+#include "score.h"
 
 #include <stddef.h>
 
@@ -25,6 +26,7 @@ typedef struct {
     int clipboard;
     int staged;
     int patch;
+    const char *commit;
     const char *query;
     const char *output;
     const char *fake_ls;

@@ -122,6 +122,11 @@ inbound opportunities (recruiters/companies referencing the profile).
 - **FR-022** (M) `.cctxpackignore` — a repository-root file of globs (`#`
   comments, blank lines skipped) applied *after* `.gitignore` and `--exclude`, to
   drop files from the bundle without untracking them. Absent file is not an error.
+- **FR-023** (M) Provenance manifest — every bundle records commit SHA (or
+  `unversioned`), file count, content bytes, content tokens, and a digest
+  identifying the file set. Rendered per format. Contains **no wall-clock time**,
+  so identical inputs still produce byte-identical output. The manifest's own
+  cost is charged against `--budget` and included in the reported total.
 
 ### Exit codes
 | Code | Meaning |
@@ -256,6 +261,7 @@ plugins, shell completions (post-v1, low cost).
 | FR-020 | `e2e_diff_worktree_and_staged`, `e2e_diff_sees_untracked_staged_and_drops_deleted`, `e2e_diff_expands_untracked_directory` |
 | FR-021 | `e2e_diff_patch_emits_hunks` (md + JSON + XML), `e2e_patch_rejected_without_diff` |
 | FR-022 | `e2e_cctxpackignore_layered_on_gitignore` |
+| FR-023 | `test_format.c` (all four formats) + `e2e_manifest_is_deterministic`, `e2e_manifest_does_not_break_budget` |
 | — | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
 | FR-014 | `tests/test_config.c` |
 | FR-015 | `tests/test_pack.c` |

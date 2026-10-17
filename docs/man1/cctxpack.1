@@ -25,6 +25,17 @@ Files are ordered deterministically (byte-wise), then fitted to an optional
 token budget. Per-file token counts are
 .IR estimates ,
 not exact tokenizer counts, and are labelled as such in every output format.
+.PP
+Every bundle begins with a provenance
+.IR manifest :
+the commit SHA of the work tree (or
+.BR unversioned ),
+the number of files included, their content bytes and estimated tokens, and a
+digest identifying the exact file set and its order. The manifest contains no
+timestamp, so two runs over an unchanged tree produce byte-identical output.
+Its own cost is charged against
+.BR \-\-budget
+and included in the reported total.
 .SH COMMANDS
 .TP
 .B pack

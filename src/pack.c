@@ -44,58 +44,6 @@ size_t pack_fit(const size_t *ests, size_t n, size_t remaining,
     return count;
 }
 
-static int lower_ascii(int c)
-{
-    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
-}
-
-static size_t count_ci(const char *hay, size_t hlen, const char *term,
-    size_t tlen)
-{
-    size_t n = 0;
-    if (tlen == 0 || hlen < tlen)
-        return 0;
-    for (size_t i = 0; i + tlen <= hlen;) {
-        size_t j = 0;
-        while (j < tlen
-            && lower_ascii((unsigned char)hay[i + j])
-                == lower_ascii((unsigned char)term[j]))
-            j++;
-        if (j == tlen) {
-            n++;
-            i += tlen;
-        } else {
-            i++;
-        }
-    }
-    return n;
-}
-
-/* FR-015: ASCII case-insensitive, non-overlapping occurrence count of every
- * whitespace-separated query term.  A hit in the basename counts twice. */
-size_t pack_score(const char *path, const char *query)
-{
-    size_t plen = strlen(path);
-    const char *slash = strrchr(path, '/');
-    const char *base = slash ? slash + 1 : path;
-    size_t blen = plen - (size_t)(base - path);
-    size_t score = 0;
-    const char *q = query;
-    while (*q) {
-        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
-            q++;
-        const char *t = q;
-        while (*q && *q != ' ' && *q != '\t' && *q != '\n' && *q != '\r')
-            q++;
-        size_t tlen = (size_t)(q - t);
-        if (tlen == 0)
-            continue;
-        score += count_ci(path, plen, t, tlen);
-        score += count_ci(base, blen, t, tlen);
-    }
-    return score;
-}
-
 static int cmp_item(const void *a, const void *b)
 {
     const pack_item *x = a;
@@ -185,6 +133,29 @@ static int finish_out(const pack_opts *o, FILE *out, strbuf *clip)
     if (out && out != stdout && fclose(out) != 0)
         rc = 1;
     return rc;
+}
+
+/* Sum of the estimates the bundle's own content would carry, plus a digest over
+ * the included paths in emission order.  Deliberately excludes the manifest
+ * text, which is rendered after the fit and accounted for separately. */
+static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
+    size_t count, format_manifest *man)
+{
+    unsigned long long h = FNV1A64_INIT;
+    size_t bytes = 0, tokens = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!items[i].included)
+            continue;
+        bytes += (size_t)items[i].size;
+        tokens += items[i].tokens;
+        h = fnv1a64(h, items[i].path, strlen(items[i].path) + 1);
+    }
+    (void)o;
+    man->commit = o->commit;
+    man->files = count;
+    man->bytes = bytes;
+    man->tokens = tokens;
+    man->digest = h;
 }
 
 static size_t est_of(const strbuf *b)
@@ -282,9 +253,15 @@ static int pack_patch(const pack_opts *o)
     }
     {
         size_t tokens = tokens_estimate(text, len);
+        format_manifest man;
+        man.commit = o->commit;
+        man.files = 1;
+        man.bytes = len;
+        man.tokens = tokens;
+        man.digest = fnv1a64(FNV1A64_INIT, "changes.diff", sizeof("changes.diff"));
         strbuf sec;
         strbuf_init(&sec);
-        format_open(&b, "changes", o->format);
+        format_open(&b, "changes", o->format, &man);
         format_tree(&b, NULL, 0, o->format);   /* closes the JSON tree key */
         format_files_open(&sec, o->format);
         format_section(&sec, o->format, 1, "changes.diff", text, len, tokens);
@@ -346,14 +323,32 @@ int pack_run(const pack_opts *o)
     if (collect(o, &paths, &items) != 0)
         goto cleanup;
 
-    format_open(&header, o->root_display, o->format);
+    /* The manifest reports post-fit totals, so the real header can only be
+     * rendered after the fit.  The reserve therefore uses a PROBE of the
+     * header, built with SIZE_MAX for every number: that renders the widest
+     * possible digits, so the probe is never shorter than the real header and
+     * a bundle cannot overshoot its budget by its own header. */
+    strbuf probe;
+    strbuf_init(&probe);
+    {
+        format_manifest worst;
+        worst.commit = o->commit;
+        worst.files = SIZE_MAX;
+        worst.bytes = SIZE_MAX;
+        worst.tokens = SIZE_MAX;
+        worst.digest = 0;
+        format_open(&probe, o->root_display, o->format, &worst);
+    }
+    size_t header_reserve = est_of(&probe);
+    strbuf_free(&probe);
+
     format_files_open(&files_open, o->format);
     format_close(&close, o->format);
     if (o->want_tree)
         format_tree(&tree_all, paths.v, paths.n, o->format);
 
     if (o->has_budget) {
-        size_t reserve = est_of(&header) + est_of(&tree_all)
+        size_t reserve = header_reserve + est_of(&tree_all)
             + est_of(&files_open) + est_of(&close);
         size_t remaining = o->budget > reserve ? o->budget - reserve : 0;
         for (size_t i = 0; i < paths.n; i++) {
@@ -388,8 +383,7 @@ int pack_run(const pack_opts *o)
     format_tree(&tree_in, o->want_tree ? inc_paths.v : NULL,
         o->want_tree ? inc_paths.n : 0, o->format);
 
-    used = est_of(&header) + est_of(&tree_in) + est_of(&files_open)
-        + est_of(&close);
+    used = est_of(&tree_in) + est_of(&files_open) + est_of(&close);
     for (size_t i = 0; i < paths.n; i++) {
         if (items[i].included) {
             used += items[i].est;
@@ -397,6 +391,14 @@ int pack_run(const pack_opts *o)
                 truncated++;
         }
     }
+
+    /* Real header now that the fitted totals are known.  Its own estimate
+     * lands in `used`, so the reported total is what the bundle actually
+     * costs; the reserve above already covered it. */
+    format_manifest man;
+    manifest_of(o, items, paths.n, count, &man);
+    format_open(&header, o->root_display, o->format, &man);
+    used += est_of(&header);
 
     FILE *out = NULL;
     strbuf clip;

@@ -17,6 +17,7 @@ add_executable(tests
     ${CMAKE_SOURCE_DIR}/src/read.c
     ${CMAKE_SOURCE_DIR}/src/tokens.c
     ${CMAKE_SOURCE_DIR}/src/pack.c
+    ${CMAKE_SOURCE_DIR}/src/score.c
     ${CMAKE_SOURCE_DIR}/src/format.c
     ${CMAKE_SOURCE_DIR}/src/util.c
 )

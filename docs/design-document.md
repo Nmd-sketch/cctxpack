@@ -45,24 +45,34 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 
 | Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
 |---|---|---|---|---|---|
-| `src/main.c` | command dispatch, version, `config_apply` | 100 | 30 | 41 | e2e smoke |
-| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 500 | 373 | 433 | `test_cli.c` |
-| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 220 | – | 182 | `test_cli.c` |
+| `src/main.c` | command dispatch, version, `config_apply` | 100 | 30 | 43 | e2e smoke |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 500 | 373 | 426 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 220 | – | 173 | `test_cli.c` |
 | `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge | 340 | – | 290 | `test_config.c` |
-| `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 555 | `test_files.c` |
-| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 157 | `test_files.c` |
-| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 149 | `test_read.c` |
-| `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 143 | `test_tokens.c` |
-| `src/pack.c` | ordering (`key`/`key2`/`path`), `pack_score`, sink, budget fit, report assembly, --patch bundle | 460 | 239 | 451 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers | 450 | 170 | 371 | `test_format.c` |
-| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE | 360 | 242 | 311 | `test_util.c` |
-| **total (`.c`)** | | | 1,710 | **3,036** | |
-| **total (`.c`+`.h`)** | | **≤ 3,500 (NFR-09)** | 1,857 | **3,206** | |
+| `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 583 | `test_files.c` |
+| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 148 | `test_files.c` |
+| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 141 | `test_read.c` |
+| `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 128 | `test_tokens.c` |
+| `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | – | 58 | `test_pack.c` |
+| `src/pack.c` | ordering (`key`/`key2`/`path`), sink, budget fit, report assembly, `--patch` bundle, manifest | 460 | 239 | 453 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest rendering | 450 | 170 | 398 | `test_format.c` |
+| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 242 | 301 | `test_util.c` |
+| **total (`.c`)** | | | 1,710 | **3,148** | |
+| **total (`.c`+`.h`)** | | **≤ 3,500 (NFR-09)** | 1,857 | **3,364** | |
 
-**Current measurement (2026-10-17, after M7).** 3,206 lines against the 3,500
+**Current measurement (2026-10-17, after M8).** 3,364 lines against the 3,500
 ceiling. `src/tokens.c` grew from 30 to 128 lines to carry the per-class
 classifier and rates. The ceiling is unchanged and the headroom is intentional —
 see the M3 review note below for why the ceiling was set where it was.
+
+**M8 review outcome (owner decision, 2026-10-17).** The provenance manifest adds
+158 lines and pushed `pack.c` from 451 to 502 against a 460 cap. The M7 review
+had explicitly recorded that `pack.c` was the one module left with no headroom
+and that "the next change there should be paid for by removing something", so
+rather than raising the cap, **`pack_score` and its helpers were extracted to a
+new `src/score.c`** — 58 lines, its own 80 cap, `test_pack.c` unchanged. That is
+the same move that produced `glob.c` from `files.c`: lexical byte comparison is
+not budget fitting. `pack.c` lands at **453/460**. No cap was raised in M8.
 
 **M7 review outcome (owner decision, 2026-10-17).** The diff corrections and
 `--patch` add 246 lines and push `files.c` from 448 to **555 against a 520 cap**
@@ -498,6 +508,31 @@ Resolved 2026-10-17 (M7 diff corrections and features):
   oversight.
 - **`cctxpack -` stdin mode was dropped for budget reasons**: `cmd.c` had 38
   lines of headroom and it was the lowest-value item of the four.
+
+Resolved 2026-10-17 (M8 provenance manifest, agent-driven audience):
+- **D-13 every bundle carries a manifest**, giving a consumer enough to say
+  exactly what it received: commit SHA, file count, content bytes, content
+  tokens, and a digest. Rendered per format — HTML comment (md, machine
+  greppable and invisible when rendered), attributes on `<context>` (xml), a
+  nested `"manifest"` object (json), a `manifest:` line (txt).
+- **D-14 the manifest contains NO wall-clock time.** Byte-identical output for
+  identical inputs is a stated property of this tool and a test; a timestamp
+  would have silently broken it. Every field is derived from the input, so two
+  runs over an unchanged tree agree exactly. `e2e_manifest_is_deterministic`
+  pins this.
+- **D-15 `digest` is FNV-1a-64 over each included path plus a NUL, in emission
+  order** — it identifies the file set and its ordering, and is recomputable by
+  anyone holding the JSON output. It is deliberately **not** a content-integrity
+  hash and is documented as such; that job belongs to the release checksums.
+- **D-16 the manifest is rendered after the budget fit** (it reports fitted
+  totals), so the reserve uses a probe header built with `SIZE_MAX` for every
+  number. Those render the widest possible digits, so the probe is never shorter
+  than the real header and a bundle cannot overshoot its budget by its own
+  header. The real header's estimate is then added to the reported total, so
+  `est. tokens X/Y` is what the bundle actually costs.
+- **`score.c` extracted from `pack.c`** (D-16 follow-on): the M7 review had
+  committed to paying for `pack.c`'s next change by removal rather than by
+  raising its cap, and `pack_score` is an independently testable concern.
 
 Resolved 2026-10-16 (M2 code review):
 - **Estimator constants α = 3.5, β = 3.8**, evaluated as `ceil((10C+35L)/38)` in

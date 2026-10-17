@@ -87,32 +87,55 @@ TEST format_tree_json_array(void)
     PASS();
 }
 
+/* Fixed manifest so the rendered provenance is assertable. */
+static const format_manifest TMAN = {
+    "abc123def456", 7, 1234, 567, 0x0123456789abcdefULL
+};
+
 TEST format_open_root_and_version(void)
 {
     strbuf sb;
     strbuf_init(&sb);
-    format_open(&sb, "proj", FMT_MD);
+    format_open(&sb, "proj", FMT_MD, &TMAN);
     ASSERT(strncmp(sb.data, "# Context bundle: proj\n", 23) == 0);
     ASSERT(strstr(sb.data, CTX_VERSION) != NULL);
+    /* machine-greppable provenance, invisible when rendered */
+    ASSERT(strstr(sb.data, "<!-- cctxpack-manifest commit=abc123def456 "
+                           "files=7 bytes=1234 tokens=567 "
+                           "digest=0123456789abcdef -->") != NULL);
     strbuf_free(&sb);
 
     strbuf_init(&sb);
-    format_open(&sb, "proj", FMT_TXT);
+    format_open(&sb, "proj", FMT_TXT, &TMAN);
     ASSERT(strncmp(sb.data, "cctxpack bundle: proj (cctxpack ", 32) == 0);
+    ASSERT(strstr(sb.data, "manifest: commit abc123def456") != NULL);
     strbuf_free(&sb);
 
     strbuf_init(&sb);
-    format_open(&sb, "proj", FMT_XML);
+    format_open(&sb, "proj", FMT_XML, &TMAN);
     ASSERT_STR_EQ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                  "<context root=\"proj\" version=\"" CTX_VERSION "\">\n",
+                  "<context root=\"proj\" version=\"" CTX_VERSION "\" "
+                  "commit=\"abc123def456\" files=\"7\" bytes=\"1234\" "
+                  "tokens=\"567\" digest=\"0123456789abcdef\">\n",
         sb.data);
     strbuf_free(&sb);
 
     strbuf_init(&sb);
-    format_open(&sb, "proj", FMT_JSON);
+    format_open(&sb, "proj", FMT_JSON, &TMAN);
     ASSERT_STR_EQ("{\"root\":\"proj\",\"version\":\"" CTX_VERSION
-                  "\",\"tree\":",
+                  "\",\"manifest\":{\"commit\":\"abc123def456\",\"files\":7,"
+                  "\"bytes\":1234,\"tokens\":567,"
+                  "\"digest\":\"0123456789abcdef\"},\"tree\":",
         sb.data);
+    /* Full-bundle JSON validity is covered by the e2e tests; format_open on
+     * its own is deliberately a partial document ending at "tree":. */
+    strbuf_free(&sb);
+
+    /* a NULL manifest must still render, and say "unversioned" */
+    strbuf_init(&sb);
+    format_open(&sb, "proj", FMT_MD, NULL);
+    ASSERT(strstr(sb.data, "commit=unversioned") != NULL);
+    ASSERT(strstr(sb.data, "files=0") != NULL);
     strbuf_free(&sb);
     PASS();
 }
@@ -220,7 +243,7 @@ TEST format_json_document_roundtrip(void)
     strbuf sb;
     strbuf_init(&sb);
     char *paths[] = { "a.c", "b.bin" };
-    format_open(&sb, "proj", FMT_JSON);
+    format_open(&sb, "proj", FMT_JSON, &TMAN);
     format_tree(&sb, paths, 2, FMT_JSON);
     format_files_open(&sb, FMT_JSON);
     format_section(&sb, FMT_JSON, 1, "a.c", "int x;\n", 7, 10);
@@ -246,7 +269,7 @@ TEST format_json_document_roundtrip(void)
     /* Empty file list still yields a well-formed document. */
     strbuf_free(&sb);
     strbuf_init(&sb);
-    format_open(&sb, "p", FMT_JSON);
+    format_open(&sb, "p", FMT_JSON, &TMAN);
     format_tree(&sb, NULL, 0, FMT_JSON);
     format_files_open(&sb, FMT_JSON);
     format_close(&sb, FMT_JSON);
