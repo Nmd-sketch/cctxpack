@@ -700,16 +700,315 @@ TEST e2e_diff_worktree_and_staged(void)
     ASSERT(strstr(b, "b.txt") == NULL);
     free(b);
 
+    /* Plain `diff` spans staged and unstaged: everything not yet committed is
+     * what someone asking for a review wants to see.  (Before this was
+     * fixed, plain `diff` compared the work tree to the index, so a staged
+     * change produced no output at all.) */
     snprintf(args, sizeof(args), "diff -o \"%s\"", out);
     ASSERT_EQ(0, run_in(dir, args, nul, err));
     b = test_read_all(out, NULL);
     ASSERT(b != NULL);
     ASSERT(strstr(b, "b.txt") != NULL);
-    ASSERT(strstr(b, "a.txt") == NULL);
+    ASSERT(strstr(b, "a.txt") != NULL);
     free(b);
 
     test_rm_rf(dir);
     free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+/* The three states `git diff --name-only` silently dropped. */
+TEST e2e_diff_sees_untracked_staged_and_drops_deleted(void)
+{
+    char *dir = scratch("diffstates");
+    char *out = scratch("e2e_diffstates.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ctx_mkdir(dir);
+    char ap[1024], gp[1024];
+    snprintf(ap, sizeof(ap), "%s/staged.txt", dir);
+    snprintf(gp, sizeof(gp), "%s/gone.txt", dir);
+    ASSERT(test_write_file(ap, "one\n", 4) == 0);
+    ASSERT(test_write_file(gp, "two\n", 4) == 0);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    /* a staged addition, an untracked file, and a deletion */
+    char sp[1024], up[1024];
+    snprintf(sp, sizeof(sp), "%s/added.txt", dir);
+    snprintf(up, sizeof(up), "%s/fresh.txt", dir);
+    ASSERT(test_write_file(sp, "added\n", 6) == 0);
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" add added.txt", dir);
+    ASSERT(test_system(cmd) == 0);
+    ASSERT(test_write_file(up, "fresh\n", 6) == 0);
+    ASSERT(remove(gp) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "diff -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "added.txt") != NULL);   /* staged */
+    ASSERT(strstr(b, "fresh.txt") != NULL);   /* untracked */
+    ASSERT(strstr(b, "gone.txt") == NULL);     /* deleted: nothing to pack */
+    free(b);
+
+    /* ...but an untracked file is not in the index, so --staged omits it */
+    snprintf(args, sizeof(args), "diff --staged -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "added.txt") != NULL);
+    ASSERT(strstr(b, "fresh.txt") == NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+/* An untracked DIRECTORY must be expanded to its files.  `git status
+ * --porcelain` collapses it to a single "dir/" entry by default, which is not
+ * a path that can be read. */
+TEST e2e_diff_expands_untracked_directory(void)
+{
+    char *dir = scratch("diffdir");
+    char *out = scratch("e2e_diffdir.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ctx_mkdir(dir);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    char inner[1024], deep[1024];
+    snprintf(inner, sizeof(inner), "%s/pkg", dir);
+    snprintf(deep, sizeof(deep), "%s/pkg/deep.txt", dir);
+    ASSERT(ctx_mkdir(inner) == 0);
+    ASSERT(test_write_file(deep, "deep\n", 5) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "diff -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "pkg/deep.txt") != NULL);
+    ASSERT(strstr(b, "pkg/deep.txt") || strstr(b, "pkg\\deep.txt"));
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+/* --patch emits the unified diff itself, so the change is legible without a
+ * previous copy of the file. */
+TEST e2e_diff_patch_emits_hunks(void)
+{
+    char *dir = scratch("diffpatch");
+    char *out = scratch("e2e_diffpatch.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ctx_mkdir(dir);
+    char ap[1024];
+    snprintf(ap, sizeof(ap), "%s/a.txt", dir);
+    ASSERT(test_write_file(ap, "one\n", 4) == 0);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    ASSERT(test_write_file(ap, "one\ntwo\n", 8) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "diff --patch -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "diff --git") != NULL);
+    ASSERT(strstr(b, "+two") != NULL);
+    free(b);
+
+    /* XML and JSON must stay machine-valid with the single synthetic section */
+    snprintf(args, sizeof(args), "diff --patch --format json -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON_Delete(j);
+    free(b);
+
+    snprintf(args, sizeof(args), "diff --patch --format xml -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "<file path=\"changes.diff\"") != NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+TEST e2e_json_is_valid_without_tree(void)
+{
+    char *dir = scratch("notree");
+    char *out = scratch("e2e_notree.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/f.c", dir);
+    ASSERT(test_write_file(fp, "int main(void){return 0;}\n", 26) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "pack . --no-tree --format json -o \"%s\"",
+        out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    /* format_open writes the "tree" key, so suppressing the tree used to
+     * leave it dangling: {"tree":,"files":...} which no parser can read. */
+    cJSON *j = cJSON_Parse(b);
+    if (!j) {
+        fprintf(stderr, "invalid JSON with --no-tree: %.200s\n", b);
+        FAILm("invalid JSON with --no-tree");
+    }
+    cJSON_Delete(j);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+TEST e2e_cctxpackignore_layered_on_gitignore(void)
+{
+    char *dir = scratch("ctxignore");
+    char *out = scratch("e2e_ctxignore.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+
+    char keep[1024], drop[1024], docsdir[1024], docs[1024], ig[1024];
+    snprintf(keep, sizeof(keep), "%s/keep.c", dir);
+    snprintf(drop, sizeof(drop), "%s/drop.c", dir);
+    snprintf(docsdir, sizeof(docsdir), "%s/docs", dir);
+    snprintf(docs, sizeof(docs), "%s/docs/guide.md", dir);
+    snprintf(ig, sizeof(ig), "%s/.cctxpackignore", dir);
+    ASSERT(test_write_file(keep, "int k;\n", 7) == 0);
+    ASSERT(test_write_file(drop, "int d;\n", 7) == 0);
+    ASSERT(ctx_mkdir(docsdir) == 0);
+    ASSERT(test_write_file(docs, "guide\n", 6) == 0);
+
+    /* a comment, a blank line and surrounding whitespace must all be skipped */
+    const char *ign = "# drop generated scratch\n\n  drop.c  \ndocs/*\n";
+    ASSERT(test_write_file(ig, ign, strlen(ign)) == 0);
+
+    /* Inside a work tree discovery is git-only (the walker is a fallback for
+     * when git is absent), and the scratch dir is itself gitignored here, so
+     * this needs its own throwaway repo for the files to be discovered. */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+
+    char args[1024];
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    /* Assert on the section header, not a bare substring: the bundle also
+     * contains .cctxpackignore, whose body spells out the patterns. */
+    ASSERT(strstr(b, "### keep.c") != NULL);
+    ASSERT(strstr(b, "### drop.c") == NULL);
+    ASSERT(strstr(b, "### docs/guide.md") == NULL);
+    free(b);
+
+    /* --exclude must still win, and neither may break discovery when the file
+     * is absent */
+    snprintf(args, sizeof(args), "pack . --exclude keep.c -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "### keep.c") == NULL);
+    free(b);
+
+    ASSERT(remove(ig) == 0);
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "### drop.c") != NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(dir);
+    PASS();
+}
+
+TEST e2e_patch_rejected_without_diff(void)
+{
+    char *dir = scratch("patchonly");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    ASSERT_EQ(2, run_in(dir, "--patch", nul, err));
+    char *e = test_read_all(err, NULL);
+    ASSERT(e != NULL);
+    ASSERT(strstr(e, "--patch is only valid with diff") != NULL);
+    free(e);
+    test_rm_rf(dir);
     free(err);
     free(nul);
     free(dir);
@@ -770,6 +1069,12 @@ SUITE(e2e_suite)
     RUN_TEST(e2e_query_and_sort_order);
     RUN_TEST(e2e_config_file);
     RUN_TEST(e2e_diff_worktree_and_staged);
+    RUN_TEST(e2e_diff_sees_untracked_staged_and_drops_deleted);
+    RUN_TEST(e2e_diff_expands_untracked_directory);
+    RUN_TEST(e2e_diff_patch_emits_hunks);
+    RUN_TEST(e2e_patch_rejected_without_diff);
+RUN_TEST(e2e_json_is_valid_without_tree);
+RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);
     RUN_TEST(e2e_diff_outside_worktree);
     test_rm_rf("ctx_e2e_tmp");
 }

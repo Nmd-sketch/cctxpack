@@ -28,6 +28,7 @@ enum {
     OPT_QUERY,
     OPT_CLIPBOARD,
     OPT_STAGED,
+    OPT_PATCH,
     OPT_HELP,
     OPT_VERSION
 };
@@ -45,6 +46,7 @@ static const struct option longopts[] = {
     { "query", required_argument, NULL, OPT_QUERY },
     { "clipboard", no_argument, NULL, OPT_CLIPBOARD },
     { "staged", no_argument, NULL, OPT_STAGED },
+    { "patch", no_argument, NULL, OPT_PATCH },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -58,7 +60,7 @@ void cli_help(void)
            "  cctxpack [pack] [paths...]   pack (default command)\n"
            "  cctxpack count [paths...]    per-file bytes/lines/tokens table\n"
            "  cctxpack tree [path]         render the directory tree\n"
-           "  cctxpack diff [--staged]     pack files changed versus HEAD\n"
+           "  cctxpack diff [--staged]     pack files changed since HEAD\n"
            "\n"
            "options:\n"
            "  --budget N            token budget (est.); auto-enables the report\n"
@@ -72,7 +74,11 @@ void cli_help(void)
            "  --report              print the budget report on stderr\n"
            "  -o FILE               write the bundle to FILE (default: stdout)\n"
            "  --clipboard           copy the bundle to the Windows clipboard\n"
-           "  --staged              diff: use staged changes (default: unstaged)\n"
+           "  --staged              diff: staged changes only\n"
+           "  --patch               diff: emit the unified diff instead of whole files\n"
+           "\n"
+           "  diff reports staged, unstaged and untracked changes by default;\n"
+           "  deleted files are never included.\n"
            "  --help                show this help\n"
            "  --version             show version\n");
 }
@@ -280,6 +286,7 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     o->sort_set = 0;
     o->clipboard = 0;
     o->staged = 0;
+    o->patch = 0;
     o->query = NULL;
     o->output = NULL;
     o->fake_ls = NULL;
@@ -382,6 +389,9 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
         case OPT_STAGED:
             o->staged = 1;
             break;
+        case OPT_PATCH:
+            o->patch = 1;
+            break;
         case OPT_HELP:
             cli_help();
             *exit_code = 0;
@@ -404,6 +414,10 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     }
     if (o->staged && strcmp(cmd, "diff") != 0) {
         *exit_code = usage_error("--staged is only valid with diff", NULL);
+        return CLI_EXIT;
+    }
+    if (o->patch && strcmp(cmd, "diff") != 0) {
+        *exit_code = usage_error("--patch is only valid with diff", NULL);
         return CLI_EXIT;
     }
     if (strcmp(cmd, "diff") == 0) {

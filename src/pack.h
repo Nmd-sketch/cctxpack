@@ -24,6 +24,7 @@ typedef struct {
     int sort_set;
     int clipboard;
     int staged;
+    int patch;
     const char *query;
     const char *output;
     const char *fake_ls;

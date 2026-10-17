@@ -221,6 +221,9 @@ static void tree_lines(strbuf *b, char *const *paths, size_t n)
 void format_tree(strbuf *b, char *const *paths, size_t n, int fmt)
 {
     if (fmt == FMT_JSON) {
+        /* Always called, even when the tree is suppressed: format_open has
+         * already written the "tree" key and nothing may follow it.  An empty
+         * list renders as [], which is what --no-tree means for a consumer. */
         cJSON *arr = cJSON_CreateArray();
         if (!arr)
             return;

@@ -80,9 +80,38 @@ cctxpack . --budget 8000 --report
 ### Only what changed (git diff)
 
 ```sh
-cctxpack diff -o review.md
-cctxpack diff --staged -o staged.md
+cctxpack diff -o review.md          # staged + unstaged + untracked
+cctxpack diff --staged -o staged.md # index only
+cctxpack diff --patch -o patch.md   # the unified diff itself
 ```
+
+`diff` reports **everything not yet committed** — staged, unstaged *and*
+untracked files. Deleted paths are skipped, since there is nothing to pack.
+
+`--patch` emits the unified diff rather than whole files. That matters when the
+model has no earlier copy of the file to compare against (a fresh session, or
+after context compaction): full files plus a remembered old version shows what
+changed, but full files alone do not. It is also dramatically cheaper — the
+patch is a few hundred tokens where the files were tens of thousands.
+
+```sh
+cctxpack diff --patch --format json   # machine-readable, still valid JSON
+```
+
+Untracked files have no diff representation, so they appear only in plain
+`cctxpack diff`, never in `--patch`.
+
+### Dropping context without touching git (`.cctxpackignore`)
+
+```gitignore
+# .cctxpackignore — one glob per line, '#' comments, blank lines ignored
+vendor/*
+*.snap
+docs/internal/**
+```
+
+Layered on top of `.gitignore`, not a replacement: files stay tracked by git,
+they just stop being packed. A missing file is not an error.
 
 ### Find and pack relevant files first
 
@@ -167,22 +196,35 @@ README ended up claiming "+0.61% accurate", which was wrong.
 
 **Aggregate — "how many tokens is this repo?"**
 
-| Corpus | Aggregate error | Files under-estimated |
-|---|---|---|
-| this repository (62 files) | **+10.8%** | 29% |
-| a C++ repo (99 files) | **+24.5%** | **1%** |
+| Corpus | Files | Aggregate | Files under-estimated |
+|---|---:|---:|---:|
+| a C++ repo | 99 | **+24.6%** | 1.0% |
+| this repository (C) | 64 | **+10.4%** | 26.6% |
+| a Markdown-heavy repo | 336 | **+30.2%** | 2.7% |
 
 **Per-file — "how many tokens is this file?"**
 
-| Content | Error vs real BPE |
-|---|---|
-| ASCII source (typical) | +5% median |
-| Cyrillic | +19% median |
-| Emoji | +24% median |
-| Accented Latin | +24% median |
-| CJK (Chinese / Kanji / Hangul) | +32% median |
-| Punctuation-dense ASCII | **up to −26%** (worst: dense C) |
-| Dense macro code | up to +55% |
+| Corpus | Median | p90 | Worst | Under |
+|---|---:|---:|---:|---:|
+| a C++ repo | +32.2% | +52.0% | **−2.5%** | 1.0% |
+| this repository (C) | +5.6% | +36.8% | **−26.1%** | 26.6% |
+| a Markdown-heavy repo | +31.4% | +46.0% | **−17.3%** | 2.7% |
+
+Reproduce all of it with:
+
+```sh
+python tools/benchmark.py "<repo-a>" "<repo-b>" "<repo-c>"
+```
+
+The harness shells out to the **real binary** rather than reimplementing the
+estimator in Python, and excludes binary files (cctxpack does not estimate them).
+Results land in `tools/benchmark-results.md`.
+
+**Prose over-estimates more than code.** The Markdown corpus sits ~6 points
+higher than C++ at the median — English prose is full of short common words
+that BPE merges aggressively, so a per-character rate runs high. CJK text
+over-estimates least (+22% median on the 9 CJK files sampled) but has the
+thinnest evidence behind it.
 
 Why aggregate is so much better than per-file: per-file errors are close to
 zero-mean, so they **cancel** across a repo — measured summed error is ~0.1% of
@@ -208,7 +250,8 @@ Two more things worth knowing:
 - **Binary files are not estimated.** A NUL byte in the first 8 KB marks a file
   binary; cctxpack emits a placeholder carrying its path and byte size instead.
 
-Reproduce with `python tools/calibrate_tokens.py --compare`; full record in
+Reproduce with `python tools/calibrate_tokens.py --compare` and
+`tools/benchmark.py`; full record in
 [design §4.6](docs/design-document.md).
 
 ## Benchmarks

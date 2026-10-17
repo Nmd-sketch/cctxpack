@@ -111,6 +111,17 @@ inbound opportunities (recruiters/companies referencing the profile).
 - **FR-018** (M) `--help` (all commands, all flags) and `--version`.
 - **FR-019** (M) Sorting — `--sort name|mtime|size`, default `name` (byte-wise on the
   normalized relative path).
+- **FR-020** (M) `diff` coverage — the changed set spans staged, unstaged **and
+  untracked** paths, since that is what "not yet committed" means to someone
+  asking for a review. `--staged` restricts to the index. Deleted paths are
+  never included (no content to pack); a rename contributes its new path.
+- **FR-021** (M) `--patch` — with `diff`, emit git's unified diff verbatim
+  instead of whole files, so a consumer with no earlier copy of a file can still
+  see what changed. Valid in all four formats. Untracked files have no diff
+  representation and are therefore absent.
+- **FR-022** (M) `.cctxpackignore` — a repository-root file of globs (`#`
+  comments, blank lines skipped) applied *after* `.gitignore` and `--exclude`, to
+  drop files from the bundle without untracking them. Absent file is not an error.
 
 ### Exit codes
 | Code | Meaning |
@@ -242,6 +253,10 @@ plugins, shell completions (post-v1, low cost).
 | FR-010/012 | `tests/test_format.c` |
 | FR-011 | `tests/test_cli.c` + JSON golden |
 | FR-013 | git-dependent e2e (skip when git absent) |
+| FR-020 | `e2e_diff_worktree_and_staged`, `e2e_diff_sees_untracked_staged_and_drops_deleted`, `e2e_diff_expands_untracked_directory` |
+| FR-021 | `e2e_diff_patch_emits_hunks` (md + JSON + XML), `e2e_patch_rejected_without_diff` |
+| FR-022 | `e2e_cctxpackignore_layered_on_gitignore` |
+| — | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
 | FR-014 | `tests/test_config.c` |
 | FR-015 | `tests/test_pack.c` |
 | FR-016 | Windows-only test |

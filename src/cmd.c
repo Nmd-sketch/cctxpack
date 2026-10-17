@@ -159,7 +159,7 @@ int cmd_diff(pack_opts *o)
     strlist changed;
     strlist_init(&changed);
     char *top = NULL;
-    int rc = files_git_diff(o->staged, &changed, &top);
+    int rc = files_git_status(o->staged, &changed, &top);
     if (rc == FILES_NOGIT) {
         fprintf(stderr, "cctxpack: diff needs a git work tree\n");
         strlist_free(&changed);

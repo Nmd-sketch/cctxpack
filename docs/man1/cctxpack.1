@@ -37,9 +37,16 @@ Print a per-file bytes/lines/tokens table instead of a bundle.
 Render the directory tree only.
 .TP
 .B diff
-Pack files changed versus HEAD. Use
+Pack files changed since HEAD. By default this spans staged, unstaged and
+untracked changes, which is what someone asking for a review wants; use
 .B \-\-staged
-for the index instead.
+for the index alone. Deleted paths are never included, because there is no
+content to pack.
+.TP
+.B diff \-\-patch
+Emit the unified diff itself instead of whole files. Use this when the consumer
+has no earlier copy of the file to compare against. Untracked files have no diff
+representation and so never appear.
 .SH OPTIONS
 .TP
 .B \-\-budget N
@@ -73,7 +80,14 @@ Copy the bundle to the clipboard (Windows only). Cannot be combined with
 .B \-\-staged
 With
 .BR diff ,
-use the index instead of the work tree.
+use staged changes only.
+.TP
+.B \-\-patch
+With
+.BR diff ,
+emit the unified diff instead of whole files. The bundle then contains a single
+section named
+.BR changes.diff .
 .TP
 .BR \-\-tree ", " \-\-no\-tree
 Include or omit the directory tree. On by default, off for
@@ -101,6 +115,18 @@ root (current directory only outside a work tree). Recognised keys:
 .BR budget ", " format ", " include ", " exclude ", " max_file_tokens ", " tree .
 Command-line flags always win. An invalid or wrongly-typed configuration is a
 usage error.
+.PP
+A
+.B .cctxpackignore
+file in the repository root is applied after
+.B .gitignore
+and after
+.BR \-\-exclude :
+one glob per line,
+.B #
+starts a comment, blank lines are skipped, surrounding whitespace is trimmed. It
+drops files from the bundle without untracking them from git. A missing file is
+not an error.
 .SH ENVIRONMENT
 .TP
 .B CTX_VOCAB_DIR

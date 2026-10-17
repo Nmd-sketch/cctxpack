@@ -1,5 +1,7 @@
 #include "files.h"
 
+#include "glob.h"
+#include "read.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -419,7 +421,78 @@ int files_git_top(char **out)
     return 0;
 }
 
-int files_git_diff(int staged, strlist *out, char **top)
+/* Apply `root/.cctxpackignore` to `paths`: one glob per line, '#' comments,
+ * blank lines skipped, surrounding whitespace trimmed.  Layered on top of
+ * .gitignore rather than replacing it, so a project can drop context without
+ * changing what git tracks.  A missing file is not an error. */
+void files_apply_ignore(const char *root, strlist *paths)
+{
+    char full[4096];
+    if (!root)
+        return;
+    snprintf(full, sizeof(full), "%s/.cctxpackignore", root);
+    read_file rf;
+    if (read_file_open(full, 0, &rf) != 0)
+        return;
+    strlist pats;
+    strlist_init(&pats);
+    if (!rf.binary) {
+        size_t start = 0;
+        for (size_t i = 0; i <= rf.len; i++) {
+            if (i != rf.len && rf.data[i] != '\n')
+                continue;
+            size_t a = start, z = i;
+            while (a < z && (rf.data[a] == ' ' || rf.data[a] == '\t'
+                              || rf.data[a] == '\r'))
+                a++;
+            while (z > a && (rf.data[z - 1] == ' ' || rf.data[z - 1] == '\t'
+                              || rf.data[z - 1] == '\r'))
+                z--;
+            if (z > a && rf.data[a] != '#') {
+                char *p = malloc(z - a + 1);
+                if (p) {
+                    memcpy(p, rf.data + a, z - a);
+                    p[z - a] = '\0';
+                    path_normalize(p);
+                    strlist_push(&pats, p);
+                    free(p);
+                }
+            }
+            start = i + 1;
+        }
+    }
+    read_file_free(&rf);
+    if (pats.n)
+        glob_filter(paths, NULL, &pats);
+    strlist_free(&pats);
+}
+
+/* Length of s up to a NUL, without relying on strnlen (MSVC portability). */
+static size_t span_len(const char *s, size_t max)
+{
+    size_t n = 0;
+    while (n < max && s[n] != '\0')
+        n++;
+    return n;
+}
+
+/* Changed paths, from `git status --porcelain -z`.
+ *
+ * `git diff --name-only` was wrong here in two ways that both produced a
+ * silently incomplete bundle: it cannot see untracked files, and with no
+ * revision it compares the work tree against the INDEX, so anything already
+ * staged produced no output at all.  Status sees all three states at once.
+ *
+ * --untracked-files=all is required: the default collapses an untracked
+ * directory to a single "dir/" entry, which is not a file that can be read.
+ *
+ * Deleted paths are dropped - there is no content to pack.  A rename or copy
+ * contributes a second NUL-terminated field holding the OLD path, which is
+ * skipped; the new path is the one we want.  `staged` limits the result to
+ * what is in the index.
+ *
+ * Returns FILES_NOGIT outside a work tree. */
+int files_git_status(int staged, strlist *out, char **top)
 {
     int rc = files_git_top(top);
     if (rc != 0)
@@ -430,16 +503,78 @@ int files_git_diff(int staged, strlist *out, char **top)
         *top = NULL;
         return FILES_ERR;
     }
-    const char *cmd = staged
-        ? "git diff --name-only --diff-filter=ACMR -z --cached"
-        : "git diff --name-only --diff-filter=ACMR -z";
     char *buf = NULL;
     size_t len = 0;
-    int prc = popen_run(cmd, &buf, &len);
+    int prc = popen_run("git status --porcelain -z --untracked-files=all",
+        &buf, &len);
     chdir_back(saved);
-    int push = prc == 0 ? split_push(out, buf, len, '\0') : FILES_ERR;
+    if (prc != 0) {
+        free(buf);
+        free(*top);
+        *top = NULL;
+        return FILES_ERR;
+    }
+
+    int err = 0;
+    size_t i = 0;
+    while (i + 3 < len && !err) {
+        char x = buf[i], y = buf[i + 1];
+        const char *p = buf + i + 3;
+        size_t plen = span_len(p, len - (i + 3));
+        size_t next = i + 3 + plen + 1;         /* one past the NUL */
+        int in_index = x != ' ' && x != '?' && x != '!';
+        int deleted = x == 'D' || y == 'D';
+        if (plen && !deleted && (!staged || in_index)) {
+            char *item = malloc(plen + 1);
+            if (!item) {
+                err = FILES_ERR;
+                break;
+            }
+            memcpy(item, p, plen);
+            item[plen] = '\0';
+            path_normalize(item);
+            if (strlist_push(out, item) != 0)
+                err = FILES_ERR;
+            free(item);
+        }
+        i = next;
+        if (x == 'R' || x == 'C' || y == 'R' || y == 'C') {
+            /* skip the old-path field of a rename/copy */
+            size_t olen = span_len(buf + i, len - i);
+            i += olen + 1;
+        }
+    }
     free(buf);
-    if (push != 0) {
+    if (err) {
+        free(*top);
+        *top = NULL;
+    }
+    return err;
+}
+
+/* Raw unified diff for everything not yet committed, or for the index alone
+ * when `staged`.  Returned verbatim: the text is emitted as-is rather than
+ * parsed into per-file sections, so no path is ever interpreted here (git
+ * quotes paths containing unusual bytes, and matching those back to our own
+ * path list is where such parsers normally break). */
+int files_git_patch(int staged, char **out, size_t *out_len, char **top)
+{
+    int rc = files_git_top(top);
+    if (rc != 0)
+        return rc;
+    char *saved = NULL;
+    if (chdir_restore(*top, &saved) != 0) {
+        free(*top);
+        *top = NULL;
+        return FILES_ERR;
+    }
+    const char *cmd = staged ? "git diff -U3 --cached" : "git diff -U3 HEAD";
+    int prc = popen_run(cmd, out, out_len);
+    chdir_back(saved);
+    if (prc != 0) {
+        free(*out);
+        *out = NULL;
+        *out_len = 0;
         free(*top);
         *top = NULL;
         return FILES_ERR;

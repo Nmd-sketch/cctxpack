@@ -163,6 +163,30 @@ static int clip_finish(FILE *p)
 }
 #endif
 
+/* Flush the clipboard buffer and close an output file.  Shared by pack_run and
+ * pack_patch so the two destinations cannot drift apart.  Returns 0 on
+ * success. */
+static int finish_out(const pack_opts *o, FILE *out, strbuf *clip)
+{
+    int rc = 0;
+    if (o->clipboard) {
+        size_t ulen = 0;
+        char *u = utf8_to_utf16le(clip->len ? clip->data : "", clip->len, &ulen);
+        FILE *p = u ? clip_open() : NULL;
+        if (!p) {
+            fprintf(stderr, "cctxpack: cannot open the clipboard helper\n");
+            rc = 1;
+        } else if (fwrite(u, 1, ulen, p) != ulen || clip_finish(p) != 0) {
+            fprintf(stderr, "cctxpack: clipboard helper failed\n");
+            rc = 1;
+        }
+        free(u);
+    }
+    if (out && out != stdout && fclose(out) != 0)
+        rc = 1;
+    return rc;
+}
+
 static size_t est_of(const strbuf *b)
 {
     return b->len ? tokens_estimate(b->data, b->len) : 0;
@@ -174,6 +198,7 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out)
         return -1;
     root_filter(paths, &o->path_args);
     glob_filter(paths, &o->include, &o->exclude);
+    files_apply_ignore(o->root, paths);
     files_sort(paths);
 
     pack_item *items = calloc(paths->n ? paths->n : 1, sizeof(*items));
@@ -225,8 +250,85 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out)
     return 0;
 }
 
+/* --patch: emit the unified diff as a single bundle section.
+ *
+ * The diff text is passed through verbatim instead of being split back into
+ * per-file sections.  That keeps this to one git invocation with no path
+ * parsing at all -- git quotes paths containing unusual bytes, and mapping
+ * those back onto our own path list is exactly where this kind of parser
+ * breaks.  It also means the section is a valid patch that can be saved and
+ * applied.  Untracked files have no diff representation, so they appear only in
+ * plain `cctxpack diff`. */
+static int pack_patch(const pack_opts *o)
+{
+    char *text = NULL, *top = NULL;
+    size_t len = 0;
+    int rc = files_git_patch(o->staged, &text, &len, &top);
+    if (rc == FILES_NOGIT) {
+        fprintf(stderr, "cctxpack: diff needs a git work tree\n");
+        return 2;
+    }
+    if (rc != 0)
+        return 1;
+
+    int out_rc = 0;
+    strbuf b, clip;
+    strbuf_init(&b);
+    strbuf_init(&clip);
+    if (len == 0) {
+        fprintf(stderr, "cctxpack: no changes%s\n",
+            o->staged ? " staged" : "");
+        goto done;
+    }
+    {
+        size_t tokens = tokens_estimate(text, len);
+        strbuf sec;
+        strbuf_init(&sec);
+        format_open(&b, "changes", o->format);
+        format_tree(&b, NULL, 0, o->format);   /* closes the JSON tree key */
+        format_files_open(&sec, o->format);
+        format_section(&sec, o->format, 1, "changes.diff", text, len, tokens);
+        format_close(&sec, o->format);
+        strbuf_appendn(&b, sec.data, sec.len);
+        strbuf_free(&sec);
+        if (o->want_report || o->has_budget)
+            fprintf(stderr,
+                "cctxpack: est. tokens %zu (unified diff%s; full files would "
+                "cost more)\n", est_of(&b), o->staged ? ", staged" : "");
+    }
+    {
+        FILE *out = stdout;
+        int ok = 1;
+        if (o->output) {
+            out = path_open(o->output, "wb");
+            if (!out) {
+                fprintf(stderr, "cctxpack: cannot write %s\n", o->output);
+                ok = 0;
+            }
+        }
+        if (ok) {
+            /* out == NULL routes sink_write into the clipboard buffer */
+            FILE *sink = o->clipboard ? NULL : out;
+            if (sink_write(sink, &clip, b.data, b.len) != 0)
+                out_rc = 1;
+            else
+                out_rc = finish_out(o, out, &clip);
+        } else {
+            out_rc = 1;
+        }
+    }
+done:
+    strbuf_free(&b);
+    strbuf_free(&clip);
+    free(text);
+    free(top);
+    return out_rc;
+}
+
 int pack_run(const pack_opts *o)
 {
+    if (o->patch)
+        return pack_patch(o);
     int rc = 1;
     strlist paths, inc_paths;
     strbuf header, tree_all, tree_in, files_open, close;
@@ -280,8 +382,11 @@ int pack_run(const pack_opts *o)
             strlist_push(&inc_paths, items[i].path);
     }
     files_sort(&inc_paths);
-    if (o->want_tree)
-        format_tree(&tree_in, inc_paths.v, inc_paths.n, o->format);
+    /* Called unconditionally: for JSON this closes the "tree" key that
+     * format_open already emitted, which --no-tree used to leave dangling,
+     * producing output no parser could read. */
+    format_tree(&tree_in, o->want_tree ? inc_paths.v : NULL,
+        o->want_tree ? inc_paths.n : 0, o->format);
 
     used = est_of(&header) + est_of(&tree_in) + est_of(&files_open)
         + est_of(&close);
@@ -360,22 +465,10 @@ int pack_run(const pack_opts *o)
     if (wr != 0)
         rc = 1;
 
-    if (o->clipboard) {
-        size_t ulen = 0;
-        char *u = utf8_to_utf16le(clip.len ? clip.data : "", clip.len, &ulen);
-        FILE *p = u ? clip_open() : NULL;
-        if (!p) {
-            fprintf(stderr, "cctxpack: cannot open the clipboard helper\n");
-            rc = 1;
-        } else if (fwrite(u, 1, ulen, p) != ulen || clip_finish(p) != 0) {
-            fprintf(stderr, "cctxpack: clipboard helper failed\n");
-            rc = 1;
-        }
-        free(u);
-    }
-    strbuf_free(&clip);
-    if (out && out != stdout && fclose(out) != 0 && rc == 0)
+    /* `out` is NULL when the clipboard buffer is being filled */
+    if (rc == 0 && finish_out(o, out, &clip) != 0)
         rc = 1;
+    strbuf_free(&clip);
     if (rc == 0 && (o->want_report || o->has_budget))
         report(o, items, paths.n, count, truncated, used);
 
