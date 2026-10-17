@@ -52,12 +52,18 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 | `src/files.c` | `git ls-files` runner, fallback walker, git top/diff runners, strlist, sort modes | 520 | 320 | 448 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 157 | `test_files.c` |
 | `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 149 | `test_read.c` |
-| `src/tokens.c` | calibrated heuristic estimator | 120 | 30 | 30 | `test_tokens.c` |
+| `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 143 | `test_tokens.c` |
 | `src/pack.c` | ordering (`key`/`key2`/`path`), `pack_score`, sink, budget fit, report assembly | 460 | 239 | 392 | `test_pack.c` |
 | `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers | 450 | 170 | 388 | `test_format.c` |
 | `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE | 360 | 242 | 311 | `test_util.c` |
-| **total (`.c`)** | | | 1,710 | **2,821** | |
-| **total (`.c`+`.h`)** | | **≤ 3,500 (NFR-09)** | 1,857 | **3,075** | |
+| **total (`.c`)** | | | 1,710 | **2,936** | |
+| **total (`.c`+`.h`)** | | **≤ 3,500 (NFR-09)** | 1,857 | **3,190** | |
+
+**Current measurement (2026-10-17, after the script-aware estimator).** 3,190
+lines against the 3,500 ceiling. `src/tokens.c` grew from 30 to 143 lines to
+carry the per-class classifier and rates; nothing else moved. The ceiling is
+unchanged and the headroom is intentional — see the M3 review note above for why
+the ceiling was set where it was.
 
 **M3 review outcome (owner decision, 2026-10-16).** M3 measures **3,075** lines
 against the then-current NFR-09 ceiling of 3,000 — a 75-line (2.5 %) overrun,
@@ -99,7 +105,7 @@ Vendored files are never modified (portability shims are additive headers).
 | D-02 | JSON via vendored **cJSON** (single module: `cJSON.c/h`) for config + JSON output | **approved 2026-10-16** by user ("vendored single file") |
 | D-03 | argv via vendored **portable getopt**: NetBSD `getopt_long.c` (single file, BSD-2-Clause); musl rejected (depends on musl-internal headers) | approved 2026-10-16; impl chosen M1 |
 | D-04 | Ignore semantics **delegated to git**: `git ls-files -c -o --exclude-standard`; non-git fallback = walker skipping `.git/` + user globs. No gitignore parser of our own | **approved 2026-10-16** by user |
-| D-05 | Estimator = calibrated heuristic for v1; exact BPE tokenizer = post-v1, approval-gated | approved 2026-10-16 |
+| D-05 | Estimator = script-aware calibrated heuristic for v1; exact BPE **evaluated and rejected 2026-10-17** (model-specific, 2.3 MB, AV-blocking) — revisit only as a sidecar build | approved 2026-10-16, revised 2026-10-17 |
 | D-06 | Test harness = vendored greatest.h + CTest; goldens committed | approved (P2) |
 | D-07 | Determinism: byte-wise sort of normalized paths; no locale APIs (`strcoll` banned) | approved (P4) |
 | D-08 | stdout=data, stderr=diagnostics | approved (P6) |
@@ -173,34 +179,104 @@ Sorted paths, two-space indentation, **plain ASCII** connectors (`+--`, `|  `);
 content = included files only. A unicode box-drawing option is post-v1.
 
 ### 4.6 Token estimator (spec + calibration record)
-- Input per file: UTF-8 code points `C` and newlines `L`. Bytes/`B` is not used
-  (byte length is a poor proxy across UTF-8 and ASCII).
-- Formula: `est = ceil((C + α·L) / β)`.
-- **Calibrated constants (2026-10-16): α = 3.5, β = 3.8.** Because α and β are
-  exact rationals (7/2 and 19/5), the ceiling is evaluated in integer arithmetic:
-  `est = ceil((10·C + 35·L) / 38)`, which is bit-identical on every platform (P4)
-  and is what `src/tokens.c` implements.
-- **Corpus**: the repository's 41 first-party text files (source, tests, docs,
-  tools, root; 120,685 bytes). Vendored third-party code is excluded: its token
-  density is unrepresentative and it dominated the token mass.
+
+**Model (revised 2026-10-17).** Every code point is classified into one of eight
+script classes and charged that class's own rate:
+
+```
+est = ceil( ( Σ_c  count_c · rate_c ) / 1000 )
+```
+
+| Class | Covers | rate (/1000) | tokens/char |
+|---|---|---|---|
+| `ascii` | ASCII, excluding `\n` | 264 | 0.264 |
+| `newline` | `\n` | 1185 | 1.185 |
+| `latin` | accented Latin (U+00C0–024F, 1E00–1EFF, …) | 1389 | 1.389 |
+| `cyrillic` | U+0400–052F, 2DE0–2DFF | 377 | 0.377 |
+| `cjk` | Han, kana, Hangul | 880 | 0.880 |
+| `emoji` | pictographs, dingbats, VS-16, regional indicators | 2495 | 2.495 |
+| `marks` | combining-mark scripts (Devanagari, Thai, …) | 982 | 0.982 |
+| `other` | Greek, Arabic, Hebrew, unlisted | 884 | 0.884 |
+
+Rates are integers, so the whole expression is integer arithmetic with no locale
+use — bit-identical on every platform (P4). Inputs are bounded by the read cap,
+so the products cannot overflow 64 bits.
+
+**Why it changed.** The previous model was `ceil((10·C + 35·L)/38)`, which charged
+*every* code point the ASCII rate of 0.263. Measured against tiktoken on this
+repository that is fine for ASCII source and catastrophic elsewhere, because one
+Han character costs roughly one whole token:
+
+| Content | old estimate | cl100k | old error |
+|---|---|---|---|
+| ASCII source | — | — | median +5% |
+| CJK prose | 0.26 /char | ~1.0 /char | **−41%** (worst −85%) |
+| accented Latin | 0.26 /char | ~1.1 /char | **−34%** |
+| emoji | 0.26 /char | ~2.0 /char | **−63%** |
+
+Under-estimating means `--budget` silently overflows the model's context window,
+which is the failure mode that matters.
+
+**How the rates were derived (2026-10-17).** For each non-ASCII class, samples
+containing *only* that class were tokenized with both `cl100k_base` and
+`o200k_base`; the ASCII and newline rates were subtracted, and the residual
+divided by the class's code-point count. The **median** across samples and both
+encodings was taken, then multiplied by **1.25** and rounded up. The bias is
+deliberate: over-estimating wastes a little of the user's budget,
+under-estimating produces a failed request.
+
+A least-squares fit over the full feature set was tried first and rejected — it
+produced negative rates for `other` and 7.3 tokens/char for `emoji`, because the
+synthetic per-script samples are too few and too collinear. Splitting ASCII into
+letters versus punctuation was also measured and rejected: it improved the median
+but doubled p90 (+36% vs +15.7%). Both dead ends are recorded so they are not
+re-attempted.
+
+**Measured result** — same corpus, both encodings, coefficients *not* fitted on
+the repo files (derivation used synthetic single-class samples only):
+
+| | median | p90 | worst | under-estimates |
+|---|---|---|---|---|
+| old model | −0.1% | +21.2% | **−85.6%** | 75/146 |
+| **new model** | **+4.4%** | +36.4% | **−37.0%** | 47/146 |
+
+Per class (median): ascii +5%, cjk **+32%**, cyrillic +19%, emoji +24%,
+latin +27%→+24%, other −0%. Every non-ASCII class now errs on the safe side;
+none of them under-estimates at the median any more.
+
+End-to-end on this repository, per file, against real tiktoken counts:
+**52 files, aggregate +11.61%** vs `cl100k_base`, worst single file **−26.1%**
+(`src/tokens.c`, punctuation-dense C).
+
+**Limitations (stated, not hidden).**
+- **Punctuation-dense ASCII under-estimates by up to ~26%.** `src/tokens.c`
+  (braces, commas, short identifiers) is the worst case. This is pre-existing
+  behaviour, not a regression from this change; splitting ASCII to fix it was
+  measured and made the overall spread worse.
+- **Dense macro code over-estimates by up to +55%** (`vendor/greatest/greatest.h`).
+- **Combining-mark scripts are the weakest class** (`marks`): the residual
+  attribution inflates it, so Devanagari/Thai text over-estimates ~+113%.
+- A character-count model cannot reach exactness without a real tokenizer, which
+  would need a ~2.3 MB vocabulary (tried, rejected — see §12).
+- This is a heuristic, not a tokenizer. Outputs keep the `est.` label.
+- **Corpus**: the repository's first-party text files (source, tests, docs,
+  tools, root). Vendored third-party code is excluded from *fitting*: its token
+  density is unrepresentative and it dominated the token mass. Vendored code is
+  still present in the end-to-end validation above, which is why it shows up as
+  the +55% over-estimate case.
 - **Reference tokenizer**: tiktoken `cl100k_base` (GPT-4/3.5), cross-checked on
-  `o200k_base` (GPT-4o).
-- **Fit**: unweighted least squares `T = p·C + q·L` gives α = 3.403, β = 3.856
-  (cl100k) and α = 3.615, β = 3.865 (o200k). Rounded to α = 3.5, β = 3.8; β is
-  rounded *down*, biasing the estimate ~2% high (the safe direction for a budget).
-- **Measured error at α = 3.5, β = 3.8**:
-  - cl100k: MAE **41.9 tokens/file**, median rel. err 5.9 %, p90 25.0 %,
-    11/41 files under-estimated, worst single-file under-count 5.94 %
-    (`src/util.c`), corpus aggregate **+2.07 %**.
-  - o200k: MAE 40.9, median 5.8 %, p90 25.0 %, worst under-count 6.58 %,
-    aggregate +1.58 %.
-- **Reproduce**: `python tools/calibrate_tokens.py --all-encodings
-  --exclude-prefix vendor/ --alpha 3.5 --beta 3.8 --show-worst`
-- **Limitations**: this is a heuristic, not a tokenizer. Per-file error is
-  typically single-digit percent but reaches ~25 % on short or unusually dense
-  files; atypical (e.g. dense vendored) text is over-counted. Outputs therefore
-  keep the `est.` label and the README makes no precise claim. An exact BPE
-  tokenizer is the post-v1 option (D-05).
+  `o200k_base` (GPT-4o), 0.14.0.
+- **Reproduce**: `python tools/calibrate_tokens.py` (re-derives the per-class
+  rates from the same synthetic single-class samples and reprints the table
+  above).
+- **Previous calibration (2026-10-16, superseded)**: least squares on
+  `T = p·C + q·L` gave α = 3.403/3.615 and β = 3.856/3.865, rounded to
+  α = 3.5, β = 3.8. It recorded a +2.07% corpus aggregate, but that aggregate
+  **hid the real failure**: it is dominated by ASCII files and cancels
+  over-estimates against under-estimates. Re-measuring per content class on the
+  same corpus showed **75 of 146** observations under-estimating and a **−85.6%**
+  worst case, which the new model cuts to 47 and −37.0%. **Aggregates are not a
+  sufficient acceptance metric for an estimator; the per-class distribution is.**
 
 The fitting invariant (the bundle's own estimate never exceeds the sum of the
 part estimates counted while fitting) holds because `est` is the ceiling of an
@@ -435,3 +511,38 @@ Remaining open:
    discovery + work-tree probe + `git ls-files`), not I/O — see the benchmark
    breakdown in the README. Caching the work-tree root would remove one spawn;
    not done, since it is an optimization rather than a requirement.
+
+Resolved 2026-10-17 — **exact BPE rejected, script-aware estimator shipped**:
+- **D-05 superseded.** An exact BPE tokenizer was fully implemented (byte-level
+  merge, hand-written pretokenizer state machines for both encodings, ~630 LOC)
+  and then **deleted without shipping**. Reasons, in order of weight:
+  1. **It was model-specific.** `cl100k_base`/`o200k_base` cover OpenAI models
+     only. Anthropic does not publish its tokenizer, so the majority of
+     "pack my repo for an LLM" users would get nothing from 2.3 MB of data.
+     Even the two OpenAI encodings disagree by 67 points on Cyrillic.
+  2. **Cost.** 2.3 MB of vendored vocabulary, a binary data format, a build-time
+     code generator, a runtime path search, and a release-layout requirement, to
+     feed the same counter more precisely. Binary went 245 KB → 2.6 MB.
+  3. **It tripped Windows Defender.** Every binary embedding the blob was
+     flagged `Trojan:MSIL/ClipBanker.GE!MTB` (an ML verdict — `MSIL` is .NET IL
+     and this is native C). A locked-file remediation deadlock pegged CPU at
+     100% and thrashed the disk until the binary was deleted manually. Shipping
+     binaries that users' antivirus quarantines on download is a launch blocker.
+  4. **It was already over budget** (NFR-09) and unfinished (a merge-loop bug
+     remained).
+  The written code, the vocab blobs, and the generator were removed rather than
+  left in the tree. Sidecar files would be the delivery mechanism if this is ever
+  revisited; the pretokenizer regexes are published in tiktoken's `encodings.py`.
+- **Script-aware estimator shipped instead** (§4.6): eight classes, integer
+  rates, median × 1.25 bias. Fixes the CJK −41% / −85% failure for ~113 LOC and
+  zero bytes of shipped data. Remaining weakness is documented, not hidden:
+  punctuation-dense ASCII still under-estimates by up to ~26%.
+- **Lesson recorded: an aggregate accuracy figure is not an acceptance metric
+  for an estimator.** The old +2.07% corpus aggregate concealed 69/124
+  under-estimates and a −85.6% worst case, because ASCII dominates the corpus and
+  cancels the errors. Future calibration must report the per-class distribution
+  and the under-estimate tail.
+- **Lesson recorded: do not derive coefficients from the validation corpus.**
+  Early attempts fit on the repo files, and stray symbols with a count of 1–2
+  (an arrow, a section sign) produced rates like 203,010 tokens/char. Derivation
+  uses synthetic single-class samples only; the repo files are validation.

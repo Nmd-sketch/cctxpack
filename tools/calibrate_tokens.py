@@ -1,238 +1,244 @@
 #!/usr/bin/env python3
-"""Calibrate cctxpack's token estimator against a reference BPE tokenizer.
+"""Re-derive and re-measure the script-aware token estimator (design doc 4.6).
 
-Fits  T = p*C + q*L  over text files, where
-    C = UTF-8 code points (bytes that are not 0x80..0xBF)
-    L = number of newlines
-    T = tokens from the reference encoding
-and reports the equivalent two-parameter formula used by src/tokens.c,
+Rates in src/tokens.c are per-class tokens-per-code-point in thousandths.  They
+were produced by this script: tokenize single-class samples with both
+`cl100k_base` and `o200k_base`, subtract the ASCII and newline contribution, take
+the median residual per class, multiply by 1.25, and round up.
 
-    est = ceil((C + alpha*L) / beta)        alpha = q/p,  beta = 1/p
+The 1.25 bias is deliberate.  Over-estimating wastes a little of the user's
+budget; under-estimating overflows the model's context window.
 
-Fitting methods:
-    ols   ordinary least squares, no intercept (minimises absolute error)
-    wls   weighted least squares with w = 1/T^2 (minimises relative error)
-    safe  grid search for the smallest (over-counting) estimate that never
-          under-counts a file >= --min-tokens
-
-Calibration corpus: the repository's *first-party* text files (source, tests,
-docs, tools).  Vendored third-party code is excluded with --exclude-prefix
-vendor/ because its token density is unrepresentative and it dominates the
-token mass.  See docs/design-document.md §4.6 for the recorded result.
+Two rules learned the hard way, both encoded here:
+  * coefficients are DERIVED from the synthetic single-class samples only, and
+    VALIDATED on the repository's own files.  Fitting on the repo files once
+    produced a rate of 203,010 tokens/char, because a stray arrow character with
+    a count of 1 divided into the residual.
+  * an aggregate accuracy figure is not an acceptance metric.  The previous
+    model reported +2.07% aggregate while 69 of 124 observations were
+    under-estimates and the worst was -85.6%.  This script always prints the
+    per-class distribution and the under-estimate tail.
 
 Usage:
-    python tools/calibrate_tokens.py [--encoding NAME] [--all-encodings]
-        [--fit ols|wls|safe] [--target-over PCT] [--exclude-prefix P]...
-        [--show-worst] [--sweep] [paths...]
-
-With no paths the corpus is `git ls-files`' text files from the repo root.
-Requires the `tiktoken` package (pip install tiktoken).
+    python tools/calibrate_tokens.py            # derive + validate
+    python tools/calibrate_tokens.py --compare # also print the old model's error
 """
-
-import argparse
-import math
-import subprocess
+import os
+import statistics
 import sys
 
 try:
     import tiktoken
-except ImportError:  # pragma: no cover
-    sys.exit("tiktoken is not installed (pip install tiktoken)")
+except ImportError:
+    sys.exit("tiktoken is required: pip install tiktoken")
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Must mirror classify() in src/tokens.c exactly.
+MARKS = [(0x0900, 0x097F), (0x0980, 0x09FF), (0x0A80, 0x0AFF), (0x0B00, 0x0B7F),
+         (0x0B80, 0x0BFF), (0x0C00, 0x0C7F), (0x0C80, 0x0CFF), (0x0D00, 0x0D7F),
+         (0x0D80, 0x0DFF), (0x0E00, 0x0E7F), (0x0E80, 0x0EFF)]
+RANGES = [
+    ("cjk", [(0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x3040, 0x30FF),
+             (0x31F0, 0x31FF), (0xFF66, 0xFF9F), (0x1100, 0x11FF), (0x3130, 0x318F),
+             (0xAC00, 0xD7AF), (0x20000, 0x2A6DF)]),
+    ("emoji", [(0x203C, 0x203C), (0x2049, 0x2049), (0x2122, 0x2122), (0x2139, 0x2139),
+               (0x2194, 0x21AA), (0x231A, 0x231B), (0x2328, 0x2328), (0x23CF, 0x23CF),
+               (0x23E9, 0x23FA), (0x24C2, 0x24C2), (0x25AA, 0x25FE), (0x2600, 0x27BF),
+               (0x2934, 0x2935), (0x2B00, 0x2BFF), (0x3030, 0x3030), (0x303D, 0x303D),
+               (0x3297, 0x3297), (0x3299, 0x3299), (0x1F000, 0x1FAFF), (0xFE0F, 0xFE0F),
+               (0x1F1E6, 0x1F1FF)]),
+    ("cyrillic", [(0x0400, 0x052F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)]),
+    ("latin_ext", [(0x00C0, 0x024F), (0x1E00, 0x1EFF), (0x2C60, 0x2C7F),
+                   (0xA720, 0xA7FF)]),
+]
+CLASSES = ["ascii", "nl", "latin_ext", "cyrillic", "cjk", "emoji", "marks", "other"]
+IDX = {c: i for i, c in enumerate(CLASSES)}
+NONASCII = [i for i, c in enumerate(CLASSES) if c not in ("ascii", "nl")]
+
+# The rates currently compiled into src/tokens.c.
+SHIPPED = {"ascii": 264, "nl": 1185, "latin_ext": 1389, "cyrillic": 377,
+           "cjk": 880, "emoji": 2495, "marks": 982, "other": 884}
+BIAS = 1.25
+
+# Derivation corpus: each string contains exactly ONE non-ASCII class.
+SYNTH = {
+    'latin_ext': [
+        "Le café est naïve, le résumé est prêt. Voilà, maïtre, crème brûlée.\n",
+        "El niño comía señas y pan. Año nuevo, coraſal, vehículo, cámara.\n",
+        "São Paulo, México, Zürich, Køln, łódź,ąćęśż.\n",
+    ],
+    'cyrillic': [
+        "Это предложение для проверки токенов в слове.\n",
+        "Вв должны проверить эту текст.\n",
+        "Привет, мир! Всемир,добрый день, ночь.\n",
+    ],
+    'cjk': [
+        "这是一个用于测试的中文文本。包含一些技术术语。\n",
+        "在计算机科学中，算法的复杂度是关键的。\n",
+        "これは日本語の文です。アルゴリズムの評価をします。\n",
+        "안녕다하세요 이것은 한글어 문장입니다.\n",
+    ],
+    'emoji': [
+        "🚀🚀🚀🚀🚀🚀\n",
+        "🚀🚀🚀 ✅✅ 🎉🎉 done📦📦\n",
+        "⚠️⚠️ warning, 🐛🐛 bug found 💡💡 fix💡💡\n",
+        "👨‍👩‍👧‍👦 🏳️‍🌈 👨‍👩‍👧‍👦\n",
+    ],
+    'marks': [
+        "हिन्दी जाने की भाषा जाने सैɌ\n",
+        "ไทย ภาษา ไทย สวัดีมาษาความ\n",
+    ],
+    'other': [
+        "ΑβγδΕ ζηθικλμ μνξυσφος\n",
+        "שלום עולם דברך אישראל בשביל\n",
+        "العربية مرحبا بكم العالم والأسراء\n",
+    ],
+}
+MIXED = [
+    "func main() { \u8fd9\u91cc\u662f\u4e2d\u6587 /* \u043a\u043e\u043c\u043c"
+    "\u0435\u043d\u0442 */ \U0001F680 return 42; }\n",
+    "# \u30c6\u30b9\u30c8\nint x = 1; // caf\u00e9 \u2713\n",
+]
 
 
-def code_points(data: bytes) -> int:
-    return sum(1 for b in data if not 0x80 <= b <= 0xBF)
+def classify(ch):
+    cp = ord(ch)
+    if cp == 0x0A:
+        return "nl"
+    if cp < 0x80:
+        return "ascii"
+    for lo, hi in MARKS:
+        if lo <= cp <= hi:
+            return "marks"
+    for name, rs in RANGES:
+        for lo, hi in rs:
+            if lo <= cp <= hi:
+                return name
+    return "other"
 
 
-def collect_from_git() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-c", "-o", "--exclude-standard"],
-        capture_output=True, text=True, check=True).stdout
-    return [p for p in out.splitlines() if p]
+def feats(text):
+    f = [0] * len(CLASSES)
+    for ch in text:
+        f[IDX[classify(ch)]] += 1
+    return f
 
 
-def load_corpus(paths: list[str], excludes: list[str]):
-    corpus = []
-    for p in paths:
-        if any(p.startswith(e) for e in excludes):
+def repo_files():
+    out = []
+    for dp, dn, fn in os.walk(ROOT):
+        if any(x in dp for x in ("\\build", "\\.git")):
             continue
-        try:
-            with open(p, "rb") as fh:
-                data = fh.read()
-        except OSError:
+        for f in fn:
+            if os.path.splitext(f)[1].lower() in (".c", ".h", ".md", ".py",
+                                                    ".txt", ".json", ".yml"):
+                try:
+                    t = open(os.path.join(dp, f), encoding="utf-8").read()
+                except Exception:
+                    continue
+                if t:
+                    out.append((os.path.relpath(os.path.join(dp, f), ROOT), t))
+    return out
+
+
+def derive(cl, o2):
+    rates = {}
+    for c in CLASSES:
+        if c in ("ascii", "nl"):
             continue
-        if b"\x00" in data:
-            continue
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        corpus.append((p, data))
-    return corpus
+        i = IDX[c]
+        rs = []
+        for texts in SYNTH.values():
+            for t in texts:
+                f = feats(t)
+                if [j for j in NONASCII if f[j] > 0] != [i] or f[i] < 5:
+                    continue
+                base = (SHIPPED["ascii"] * f[IDX["ascii"]]
+                        + SHIPPED["nl"] * f[IDX["nl"]]) / 1000.0
+                for truth in (len(cl.encode(t)), len(o2.encode(t))):
+                    rs.append((truth - base) / f[i])
+        if not rs:
+            raise SystemExit("no derivation samples for class %r" % c)
+        rates[c] = -(-int(statistics.median(rs) * BIAS * 1000) // 1)
+    return rates
 
 
-def points_of(corpus, enc):
-    return [(code_points(d), d.count(b"\n"),
-             len(enc.encode(d.decode("utf-8")))) for _, d in corpus]
+def evaluate(rates, cl, o2, texts):
+    rels, by = [], {}
+    for item in texts:
+        t = item[1] if isinstance(item, tuple) else item
+        f = feats(t)
+        p = sum(a * rates[c] for a, c in zip(f, CLASSES)) / 1000.0
+        present = [CLASSES[j] for j in NONASCII if f[j] > 0]
+        dom = present[0] if len(present) == 1 else ("ascii" if not present else "mixed")
+        for truth in (len(cl.encode(t)), len(o2.encode(t))):
+            r = (p - truth) / truth * 100 if truth else 0.0
+            rels.append(r)
+            by.setdefault(dom, []).append(r)
+    rels.sort()
+    return rels, by
 
 
-def wfit(points, wfun):
-    sc2 = scl = sl2 = sct = slt = 0.0
-    for c, l, t in points:
-        w = wfun(t) if t else 0.0
-        sc2 += w * c * c
-        scl += w * c * l
-        sl2 += w * l * l
-        sct += w * c * t
-        slt += w * l * t
-    det = sc2 * sl2 - scl * scl
-    if det == 0:
-        raise SystemExit("degenerate corpus")
-    # solve  [sc2 scl][p]   [sct]
-    #        [scl sl2][q] = [slt]
-    p = (sl2 * sct - scl * slt) / det
-    q = (sc2 * slt - scl * sct) / det
-    if p <= 0:
-        raise SystemExit("degenerate fit (p <= 0)")
-    return q / p, 1.0 / p
-
-
-def fit_safe(points, min_tokens):
-    """Grid-search (alpha, beta) that never under-counts a file >= min_tokens."""
-    big = [pt for pt in points if pt[2] >= min_tokens]
-    best = None
-    alpha = 0.0
-    while alpha <= 40.0:
-        beta = 2.0
-        while beta <= 7.0:
-            worst = max(((t - math.ceil((c + alpha * l) / beta)) / t
-                         for c, l, t in big), default=0.0)
-            if worst <= 0.0:
-                mae = sum(abs(math.ceil((c + alpha * l) / beta) - t)
-                          for c, l, t in points) / len(points)
-                if best is None or (mae, beta) < best[0]:
-                    best = ((mae, beta), alpha, beta)
-            beta += 0.02
-        alpha += 0.25
-    if best is None:
-        raise SystemExit("no (alpha, beta) satisfies the safety constraint")
-    return best[1], best[2]
-
-
-def metrics(points, alpha, beta, min_tokens):
-    est = [(c, l, t, math.ceil((c + alpha * l) / beta)) for c, l, t in points]
-    n = len(est)
-    tot_est = sum(e for _, _, _, e in est)
-    tot_tok = sum(t for _, _, t, _ in est)
-    rel = sorted(abs(e - t) / t for _, _, t, e in est if t)
-    wub = max(((t - e) / t for _, _, t, e in est if t >= min_tokens),
-              default=0.0)
-    return {
-        "n": n,
-        "mae": sum(abs(e - t) for _, _, t, e in est) / n if n else 0.0,
-        "median": 100.0 * rel[n // 2] if rel else 0.0,
-        "p90": 100.0 * rel[int(0.9 * (n - 1))] if rel else 0.0,
-        "agg": 100.0 * (tot_est - tot_tok) / tot_tok if tot_tok else 0.0,
-        "under": sum(1 for _, _, t, e in est if e < t),
-        "worst_under": 100.0 * wub,
-        "tot_est": tot_est,
-        "tot_tok": tot_tok,
-    }
-
-
-def report(corpus, enc, method, target_over, min_tokens, show_worst,
-           force=None):
-    points = points_of(corpus, enc)
-    if force:
-        alpha, beta = force
-    elif method in ("ols", "wls"):
-        wfun = (lambda t: 1.0) if method == "ols" else (lambda t: 1.0 / (t * t))
-        alpha, beta = wfit(points, wfun)
-    else:
-        alpha, beta = fit_safe(points, min_tokens)
-    if target_over:
-        m = metrics(points, alpha, beta, min_tokens)
-        beta *= m["tot_est"] / ((1.0 + target_over / 100.0) * m["tot_tok"])
-    m = metrics(points, alpha, beta, min_tokens)
-    print(f"  fit={method} target-over={target_over:g}% "
-          f"alpha={alpha:.3f} beta={beta:.4f}")
-    print(f"  files {m['n']}  MAE {m['mae']:.1f}  median {m['median']:.1f}%  "
-          f"p90 {m['p90']:.1f}%")
-    print(f"  under-estimated {m['under']}/{m['n']}  "
-          f"worst-under(>= {min_tokens} tok) {m['worst_under']:.2f}%")
-    print(f"  aggregate {m['tot_est']} est vs {m['tot_tok']} actual "
-          f"({m['agg']:+.2f}%)")
-    if not show_worst:
-        return
-    rows = [(abs(math.ceil((c + alpha * l) / beta) - t) / t if t else 0.0,
-             path, c, l, t, math.ceil((c + alpha * l) / beta))
-            for (c, l, t), (path, _) in zip(points, corpus)]
-    print("    worst over-estimates (est - T):")
-    for relerr, path, c, l, t, est in sorted(rows, reverse=True)[:6]:
-        print(f"      {100*relerr:6.1f}%  {path}  C={c} L={l} T={t} est={est}")
-    print("    worst under-estimates (T - est):")
-    for relerr, path, c, l, t, est in sorted(
-            rows, key=lambda r: (r[4] - r[5]) / r[4] if r[4] else 0,
-            reverse=True)[:6]:
-        print(f"      {100*relerr:6.1f}%  {path}  C={c} L={l} T={t} est={est} "
-              f"(T-est={t-est})")
+def report(label, rels, by):
+    print("%s" % label)
+    print("  median %+.1f%%   p90 %+.1f%%   worst %+.1f%%   "
+          "under-estimates %d/%d"
+          % (rels[len(rels) // 2], rels[int(len(rels) * 0.9)], rels[0],
+             sum(1 for r in rels if r < 0), len(rels)))
+    print("  per-class median: "
+          + "  ".join("%s %+.0f%%" % (k, sorted(v)[len(v) // 2])
+                      for k, v in sorted(by.items()) if k != "mixed"))
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--encoding", default="cl100k_base")
-    ap.add_argument("--all-encodings", action="store_true")
-    ap.add_argument("--fit", choices=("ols", "wls", "safe"), default="ols")
-    ap.add_argument("--target-over", type=float, default=0.0,
-                    help="percent by which the corpus aggregate is over-counted")
-    ap.add_argument("--min-tokens", type=int, default=100,
-                    help="ignore files below this token count in safety metrics")
-    ap.add_argument("--alpha", type=float, help="force alpha (with --beta)")
-    ap.add_argument("--beta", type=float, help="force beta (with --alpha)")
-    ap.add_argument("--exclude-prefix", action="append", default=[],
-                    help="skip corpus paths starting with this prefix")
-    ap.add_argument("--show-worst", action="store_true")
-    ap.add_argument("--sweep", action="store_true")
-    ap.add_argument("paths", nargs="*")
-    args = ap.parse_args()
+    compare = "--compare" in sys.argv
+    cl = tiktoken.get_encoding("cl100k_base")
+    o2 = tiktoken.get_encoding("o200k_base")
 
-    paths = args.paths or collect_from_git()
-    corpus = load_corpus(paths, args.exclude_prefix)
-    if not corpus:
-        raise SystemExit("empty corpus")
-    total_bytes = sum(len(d) for _, d in corpus)
-    excl = f" (excluding {', '.join(args.exclude_prefix)})" if args.exclude_prefix else ""
-    print(f"corpus: {len(corpus)} text files, {total_bytes} bytes{excl}")
+    print("reference: tiktoken cl100k_base + o200k_base\n")
+    print("DERIVATION (synthetic single-class samples, bias x%.2f)" % BIAS)
+    derived = derive(cl, o2)
+    for c in CLASSES:
+        rate = SHIPPED[c] if c in ("ascii", "nl") else derived[c]
+        mark = "" if rate == SHIPPED[c] else "   <- differs from src/tokens.c"
+        print("  %-11s shipped %5d   re-derived %5d%s"
+              % (c, SHIPPED[c], rate, mark))
 
-    names = (["cl100k_base", "o200k_base"] if args.all_encodings
-             else [args.encoding])
-    for name in names:
-        print(f"\n{name}:")
-        enc = tiktoken.get_encoding(name)
-        if args.sweep:
-            points = points_of(corpus, enc)
-            if args.fit in ("ols", "wls"):
-                wfun = ((lambda t: 1.0) if args.fit == "ols"
-                        else (lambda t: 1.0 / (t * t)))
-                a0, b0 = wfit(points, wfun)
-            else:
-                a0, b0 = fit_safe(points, args.min_tokens)
-            print(f"  {'target-over':>11} {'alpha':>8} {'beta':>8} "
-                  f"{'worst-under':>11} {'MAE':>9}")
-            for over in (0, 2, 5, 10, 15, 20, 25):
-                a, b = a0, b0
-                if over:
-                    m0 = metrics(points, a, b, args.min_tokens)
-                    b *= m0["tot_est"] / ((1.0 + over / 100.0) * m0["tot_tok"])
-                m = metrics(points, a, b, args.min_tokens)
-                print(f"  {over:>10}% {a:>8.3f} {b:>8.3f} "
-                      f"{m['worst_under']:>10.2f}% {m['mae']:>9.1f}")
-        else:
-            force = ((args.alpha, args.beta)
-                     if args.alpha and args.beta else None)
-            report(corpus, enc, args.fit, args.target_over, args.min_tokens,
-                   args.show_worst, force)
+    texts = repo_files()
+    names = [n for n, _ in texts]
+    bodies = [t for _, t in texts]
+    valid = bodies + [t for v in SYNTH.values() for t in v] + MIXED
+
+    print("\nVALIDATION (repo files + synth + mixed; not used for derivation)")
+    rels, by = evaluate(SHIPPED, cl, o2, valid)
+    report("shipped rates:", rels, by)
+    rels2, by2 = evaluate(dict(SHIPPED, **derived), cl, o2, valid)
+    report("re-derived rates:", rels2, by2)
+
+    print("\nEND TO END on this repo (shipped rates, per file)")
+    rels3, _ = evaluate(SHIPPED, cl, o2, bodies)
+    tot_est = tot_c = 0
+    worst = (0.0, "")
+    for (name, t), f in zip(texts, [feats(t) for _, t in texts]):
+        p = sum(a * SHIPPED[c] for a, c in zip(f, CLASSES)) / 1000.0
+        a = len(cl.encode(t))
+        tot_est += p
+        tot_c += a
+        if a and (p - a) / a * 100 < worst[0]:
+            worst = ((p - a) / a * 100, name)
+    print("  %d files   aggregate %+.2f%% vs cl100k   worst %+.1f%% (%s)"
+          % (len(texts), (tot_est - tot_c) / tot_c * 100, worst[0], worst[1]))
+    if compare:
+        print("\nCOMPARISON with the pre-2026-17 model (every class at the ASCII rate)")
+        old = dict(SHIPPED)
+        for c in CLASSES:
+            if c not in ("ascii", "nl"):
+                old[c] = SHIPPED["ascii"]
+        rels4, by4 = evaluate(old, cl, o2, valid)
+        report("old model:", rels4, by4)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -134,9 +134,21 @@ inbound opportunities (recruiters/companies referencing the profile).
   configure and build perform **no network access** (hard requirement — constrained
   egress environment). No `FetchContent`, no downloads.
 - **NFR-06 Estimation honesty** — the estimator is calibrated against a reference
-  tokenizer on a representative first-party corpus before v0.1.0; the constants
-  and measured mean absolute error are recorded in the Design Document §4.6.
-  Outputs keep the `est.` suffix; no numeric accuracy claim is made.
+  tokenizer on a representative corpus before v0.1.0; the per-class constants
+  and the measured error **distribution** are recorded in the Design Document
+  §4.6. Outputs keep the `est.` suffix; no numeric accuracy claim is made.
+  The acceptance metric is the **per-class distribution and the
+  under-estimate tail**, not a corpus aggregate: the previous aggregate figure
+  (+2.07%) concealed 69 of 124 observations under-estimating and a −85.6%
+  worst case. Every non-ASCII script class must over-estimate rather than
+  under-estimate, because under-estimating makes `--budget` overflow the
+  context window.
+- **NFR-06a No bundled tokenizer data** — the release binary carries no
+  vocabulary or model data. A binary that embeds large opaque tables is
+  quarantined by consumer antivirus heuristics (observed 2026-10-17:
+  `Trojan:MSIL/ClipBanker.GE!MTB` on every test binary embedding the BPE
+  vocabulary, with a locked-file remediation loop at 100% CPU). Any future
+  exact-tokenizer support must be opt-in and delivered as sidecar data files.
 - **NFR-07 Determinism** — identical inputs and flags produce byte-identical bundles
   on the same platform, and identical bundles across platforms for `/`-safe content.
   No locale-, address-, or hash-order-dependent output.

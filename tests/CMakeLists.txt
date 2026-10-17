@@ -30,6 +30,7 @@ target_compile_definitions(tests PRIVATE
     CTX_VERSION="${PROJECT_VERSION}"
     CTX_E2E_BIN="$<TARGET_FILE:cctxpack>"
     CTX_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/repo"
+    CTX_BPE_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/bpe"
 )
 
 ctx_enable_getopt(tests)

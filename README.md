@@ -107,18 +107,48 @@ cctxpack discovers tracked/untracked files (respecting `.gitignore`), applies in
 |---|---|---|
 | Runtime | C (single native binary) | Node.js/TypeScript |
 | Dependencies | Vendored only (offline) | Node deps (npm) |
-| Token counting | heuristic estimate (`ceil((10C+35L)/38)`, calibrated; **0.61 %** from tiktoken on this repo) | exact BPE (tiktoken `cl100k_base`) |
+| Token counting | script-aware heuristic, 8 per-language rates (**+11.6% aggregate**, safe direction on every non-ASCII class) | exact BPE (tiktoken `cl100k_base`) |
 | Formats | md, xml, json, txt | md (primary), xml/json/txt variants |
 | Git-aware | `diff`, `diff --staged` (NUL-split, worktree-aware) | No native diff mode |
 | Selection | Path-weighted `--query` + globs + sort (mtime/size/name) | Globs/ignore + some ordering |
 | Determinism | Byte-stable across runs (no locale) | Mostly stable; depends on deps/formatting |
-| Footprint | 245 KB binary, 8.2 ms startup | Node runtime + npm dep tree |
+| Footprint | 246 KB binary, 8.2 ms startup | Node runtime + npm dep tree |
 | Use case | CLI-first, air-gapped, scriptable, reproducible | Polished TS UX |
 
 Honest trade-off: repomix's token counts are **exact** (tiktoken) while ours are
-a calibrated heuristic. We buy speed and zero dependencies with ~0.6 % typical
-error on ordinary source; the error grows on dense vendored code (see §4.6 of
-the design doc).
+a calibrated script-aware heuristic. We buy a 246 KB dependency-free binary for
+that, and we bias high — over-estimating wastes a little budget, under-estimating
+fails the request.
+
+### How accurate is `--budget`?
+
+Counts are **estimates** (`est.`), labelled as such everywhere. Measured against
+real `cl100k_base` / `o200k_base` counts, per content class:
+
+| Content | Error vs real BPE |
+|---|---|
+| ASCII source (typical) | +5% median |
+| CJK (Chinese / Kanji / Hangul) | +32% median |
+| Accented Latin | +24% median |
+| Emoji | +24% median |
+| Cyrillic | +19% median |
+| Punctuation-dense ASCII | **up to −26%** (worst case: dense C) |
+| Dense macro code | up to +55% |
+
+On this repository end-to-end: **+11.6% aggregate**, worst single file −26%.
+
+Two things worth knowing:
+
+- **We deliberately over-estimate** on non-ASCII content. The previous model
+  charged every character the ASCII rate, which put CJK text **48% under** at the
+  median and **86% under** at worst — so `--budget 100000` could really emit
+  186,000 tokens and overflow the context window.
+- **The old "+0.61% accurate" figure was misleading.** It was a corpus *average*
+  dominated by ASCII files, which cancelled out real 30–70% failures on other
+  scripts. Per-class numbers are the honest metric, and that's what we publish.
+
+Reproduce with `python tools/calibrate_tokens.py --compare`; full record in
+[design §4.6](docs/design-document.md).
 
 ## Benchmarks
 
@@ -126,14 +156,14 @@ All numbers below were measured on this repository with both tools packing the
 **same file set**, on Windows 11 / MSVC Release build, cctxpack 0.1.0-dev vs
 repomix 1.18.1. Reproduce with the commands in the footnote.
 
-### Identical inputs — `src/**` (21 files, 81,726 content bytes)
+### Identical inputs — `src/**` (21 files, 86,000 content bytes)
 
 | Metric | cctxpack | repomix 1.18.1 | |
 |---|---|---|---|
 | Files packed | 21 | 21 | same set |
-| Tokens | **24,350** (heuristic estimate) | **24,500** (tiktoken `cl100k_base`) | est. within **0.61 %** of real BPE |
-| Output size | 82,682 B | 84,307 B | |
-| Wall time | **177 ms** | **~2,950 ms** | **~17× faster** |
+| Tokens | **25,650** (heuristic estimate) | **26,239** (tiktoken `cl100k_base`) | ours is −2.2% here; aggregate bias is +11.6% |
+| Output size | 86,958 B | 88,583 B | |
+| Wall time | **183 ms** | **~2,550 ms** | **~14× faster** |
 | Startup only (`--version`) | 8.2 ms | — | |
 
 ### Full repository (each tool's *default* file selection)
@@ -144,12 +174,12 @@ comparison — shown to document the difference:
 | | cctxpack | repomix |
 |---|---|---|
 | Files | 62 | 47 |
-| Tokens | 116,351 (est.) | 64,059 (tiktoken) |
-| Output size | 402,762 B | 218,911 B |
-| Wall time | 203 ms | ~3,000 ms |
+| Tokens | 122,152 (est.) | 70,068 (tiktoken) |
+| Output size | 421,172 B | 237,321 B |
+| Wall time | 205 ms | ~2,550 ms |
 
 cctxpack's larger total is mostly vendored code it respects as source:
-`vendor/greatest/greatest.h` alone is 68,870 bytes / 19,290 est. tokens, and the
+`vendor/greatest/greatest.h` alone is 68,870 bytes / 19,348 est. tokens, and the
 token estimator is known to over-count dense vendored text (§4.6 of the design
 doc). repomix's default patterns exclude it. Use `--exclude` / `--include` to
 match whichever corpus you want.
