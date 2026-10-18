@@ -87,9 +87,12 @@ TEST format_tree_json_array(void)
     PASS();
 }
 
-/* Fixed manifest so the rendered provenance is assertable. */
+/* Fixed manifest so the rendered provenance is assertable.  Designated
+ * initialisers, because the optional fields are added to over time and a
+ * positional list silently shifts when one is inserted. */
 static const format_manifest TMAN = {
-    "abc123def456", 7, 1234, 567, 0x0123456789abcdefULL
+    .commit = "abc123def456", .files = 7, .bytes = 1234, .tokens = 567,
+    .digest = 0x0123456789abcdefULL
 };
 
 TEST format_open_root_and_version(void)
@@ -180,6 +183,99 @@ TEST format_manifest_redactions_per_format(void)
     strbuf_init(&sb);
     format_open(&sb, "p", FMT_XML, &m);
     ASSERT(strstr(sb.data, "redactions") == NULL);
+    strbuf_free(&sb);
+    PASS();
+}
+
+/* A consumer of a bundle must be able to tell that content was dropped, and
+ * must not read `bytes` as "bytes in this bundle" when it is bytes on disk.
+ * Each optional field has to render in all four syntaxes and stay silent when
+ * zero, or output silently stops being parseable / starts claiming things. */
+TEST format_manifest_truncation_per_format(void)
+{
+    format_manifest m = TMAN;
+    m.truncated = 2;
+    m.bytes_packed = 900;
+    strbuf sb;
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_MD, &m);
+    ASSERT(strstr(sb.data, "truncated=2 bytes_packed=900 -->") != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_TXT, &m);
+    ASSERT(strstr(sb.data, "truncated=2 bytes_packed=900") != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_XML, &m);
+    ASSERT(strstr(sb.data,
+        "digest=\"0123456789abcdef\" truncated=\"2\" bytes_packed=\"900\">")
+        != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_JSON, &m);
+    ASSERT(strstr(sb.data, "\"digest\":\"0123456789abcdef\","
+                           "\"truncated\":2,\"bytes_packed\":900}") != NULL);
+    /* The real bundle is open + tree + files + close, so the document only
+     * parses once it is complete - which is exactly when a mis-composed
+     * fragment (an unclosed object, a stray comma) becomes visible. */
+    format_tree(&sb, NULL, 0, FMT_JSON);
+    format_files_open(&sb, FMT_JSON);
+    format_close(&sb, FMT_JSON);
+    cJSON *j = cJSON_Parse(sb.data);
+    ASSERT(j != NULL);
+    ASSERT_EQ(2, (int)cJSON_GetObjectItem(
+        cJSON_GetObjectItem(j, "manifest"), "truncated")->valueint);
+    ASSERT_EQ(900, (int)cJSON_GetObjectItem(
+        cJSON_GetObjectItem(j, "manifest"), "bytes_packed")->valueint);
+    cJSON_Delete(j);
+    strbuf_free(&sb);
+
+    /* zero emits nothing, so an unmodified bundle is byte-identical to one
+     * built before these fields existed */
+    m.truncated = 0;
+    m.bytes_packed = 0;
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_JSON, &m);
+    ASSERT(strstr(sb.data, "truncated") == NULL);
+    ASSERT(strstr(sb.data, "bytes_packed") == NULL);
+    strbuf_free(&sb);
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_XML, &m);
+    ASSERT(strstr(sb.data, "truncated") == NULL);
+    ASSERT(strstr(sb.data, "bytes_packed") == NULL);
+    strbuf_free(&sb);
+    PASS();
+}
+
+/* All three optional fields together, since the fragments are composed and a
+ * missing one would silently close the JSON object early. */
+TEST format_manifest_all_optional_fields(void)
+{
+    format_manifest m = TMAN;
+    m.redactions = 5;
+    m.truncated = 1;
+    m.bytes_packed = 42;
+    strbuf sb;
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_JSON, &m);
+    ASSERT(strstr(sb.data, "\"redactions\":5,\"truncated\":1,"
+                           "\"bytes_packed\":42}") != NULL);
+    format_tree(&sb, NULL, 0, FMT_JSON);
+    format_files_open(&sb, FMT_JSON);
+    format_close(&sb, FMT_JSON);
+    cJSON *j = cJSON_Parse(sb.data);
+    ASSERT(j != NULL);
+    cJSON_Delete(j);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_XML, &m);
+    ASSERT(strstr(sb.data,
+        "redactions=\"5\" truncated=\"1\" bytes_packed=\"42\">") != NULL);
     strbuf_free(&sb);
     PASS();
 }
@@ -347,6 +443,8 @@ SUITE(format_suite)
     RUN_TEST(format_tree_json_array);
     RUN_TEST(format_open_root_and_version);
     RUN_TEST(format_manifest_redactions_per_format);
+    RUN_TEST(format_manifest_truncation_per_format);
+    RUN_TEST(format_manifest_all_optional_fields);
     RUN_TEST(format_section_language_hint);
     RUN_TEST(format_section_extends_fence);
     RUN_TEST(format_section_adds_trailing_newline);

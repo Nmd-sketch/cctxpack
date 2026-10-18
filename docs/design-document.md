@@ -46,22 +46,22 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 | Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
 |---|---|---|---|---|---|
 | `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 43 | e2e smoke |
-| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 449 | `test_cli.c` |
-| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 240 | – | 207 | `test_cli.c` |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 455 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | - | 257 | `test_cli.c` |
 | `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge | 340 | – | 269 | `test_config.c` |
 | `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 583 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 148 | `test_files.c` |
-| `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 141 | `test_read.c` |
+| `src/read.c` | open/read, binary sniff, read + token caps, truncation reasons (M11) | 215 | 149 | 186 | `test_read.c` |
 | `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 128 | `test_tokens.c` |
 | `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | - | 58 | `test_pack.c` |
 | `src/fit.c` | budget fitting, extracted from `pack.c` (M10) | 60 | - | 22 | `test_pack.c` |
 | `src/outline.c` | declaration-outline scanner + refusal fallback (M10) | 620 | - | 534 | `test_outline.c` |
 | `src/redact.c` | opt-in credential redaction (M9): vendor shapes, assignments, PEM blocks | 300 | - | 266 | `test_redact.c` |
-| `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 566 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 479 | `test_format.c` |
+| `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 598 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 512 | `test_format.c` |
 | `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 242 | 301 | `test_util.c` |
-| **total (`.c`)** | | | 1,710 | **3,495** | |
-| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,535** | |
+| **total (`.c`)** | | | 1,710 | **4,394** | |
+| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,743** | |
 
 **Current measurement (2026-10-17, after M9).** 3,752 lines against the 4,000
 ceiling. `src/tokens.c` grew from 30 to 128 lines to carry the per-class
@@ -100,6 +100,33 @@ a documentation-heavy corpus sees almost nothing. Had the claim been published a
 a single "10×" figure it would have been roughly right for code and badly wrong
 for most real inputs, which is why the measurement — not the estimate — is what
 the README carries.
+
+**M11 review outcome (owner decision, 2026-10-18).** Truncation reporting adds
+**183** lines and lands at **4,743**, still inside the 5,200 ceiling M10 set, so
+no budget was raised. Two module caps move on their own review trigger:
+`cmd.c` **240 → 300** (257 measured) and `read.c` **175 → 215** (186).
+
+The trigger is worth stating plainly because the fix grew rather than shrank:
+the reported bug was "two numbers disagree silently", and making them agree
+honestly required distinguishing two causes, rendering that distinction in four
+formats, and composing optional fields generally instead of ad hoc.
+
+Three defects, only the first of which was the reported one:
+
+- `bytes` came from `stat` while `lines`/`tokens` came from the truncated read,
+  so a 14 MB file reported 14 MB beside counts derived from 4 MB — off by 3.4x,
+  with no field saying so anywhere.
+- `--max-file-tokens` was an `else if` after the read cap, so it was **silently
+  ignored for every file at or above 4 MB**. A 4 MB read is ~1.2M estimated
+  tokens, so asking for 2,000 got you ~1.2M.
+- The token-cap marker was appended *after* cutting to exactly the cap, so the
+  result exceeded the cap by the marker's own size. The marker is now built
+  first and charged against the budget.
+
+Fixing the second exposed a latent hang: the cut loop scanned backwards one
+line at a time, re-estimating the entire prefix each step. That is quadratic,
+and on a 4 MB file it never finishes — it had simply never been reached, because
+the `else if` meant the loop only ever saw small files.
 
 **M8 review outcome (owner decision, 2026-10-17).** The provenance manifest adds
 158 lines and pushed `pack.c` from 451 to 502 against a 460 cap. The M7 review
@@ -632,6 +659,34 @@ Resolved 2026-10-17 (M9 opt-in credential redaction, agent-driven audience):
   not from prose. `count --outline` routes through the same helper `pack` uses
   (`count_of`), so the two commands cannot silently disagree — the same reason
   `--redact` is rejected where it would be a no-op.
+- **D-27 `bytes` keeps meaning "on disk", and `bytes_packed` is added rather
+  than `bytes` being redefined.** The two numbers describe different things
+  once truncation happens, and only one of them can keep the familiar name.
+  `bytes` is the one a caller already has (file listings, git, `ls`) and
+  changing its meaning would silently break consumers. `bytes_packed` is emitted
+  only when it differs, so a bundle that lost nothing is byte-identical to one
+  built before this change — the same "no field claiming what did not happen"
+  rule that `redactions` follows (D-21).
+- **D-28 the truncation reason is part of the interface, not just a boolean.**
+  The read cap is a memory bound and the token cap is a request the user made;
+  they have opposite remedies, so a single `truncated: true` cannot be acted on.
+  `truncation` is one of `read-cap` or `token-cap`. Where both could apply, the
+  token cap is reported because it is the binding constraint and the one that
+  explains the result; the read cap still bounded memory but cut no further.
+- **D-29 the token cap cuts before the marker is added, and the marker is
+  charged against it.** Cutting to exactly `max_tokens` and then appending the
+  marker overshoots by the marker's own size (~13 tokens). The marker's text is
+  known up front because `max_tokens` is, so its cost is subtracted first. Small,
+  but it is the one guarantee the tool makes, and a cap that is exceeded by the
+  tool's own explanation of the cap is not a cap.
+- **D-30 the token-cut search is a binary search.** `tokens_estimate` is a plain
+  non-decreasing sum over the prefix — no length normalisation — so the cut
+  point is found in O(log n) estimates and then rounded back to a line boundary.
+  The previous backward line scan re-estimated the whole prefix per line, which
+  is quadratic: on a 4 MB file it does not terminate. It was never reached
+  because the `else if` in D-28's predecessor confined it to small files, so
+  fixing the `else if` is what exposed the hang. The two bugs were the same
+  line of code.
 
 Resolved 2026-10-16 (M2 code review):
 - **Estimator constants α = 3.5, β = 3.8**, evaluated as `ceil((10C+35L)/38)` in

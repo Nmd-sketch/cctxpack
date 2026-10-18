@@ -271,6 +271,21 @@ cctxpack count . --format json
 cctxpack tree .
 ```
 
+```
+      bytes     lines    tokens  path                                      note
+   14077780     79559   1180582  big.c                                     read cap: 4194304 of 14077780 bytes
+      50000      1023    14143  small.c
+   14127780     80582   1194725  total                                     some files truncated
+```
+
+**Read `bytes` as "bytes on disk".** `lines` and `tokens` describe what was
+actually read, and those only describe the same content when nothing was
+dropped. Files above 4 MiB are read up to that cap — a memory bound over
+whatever path you pointed at, not a tuning knob — and `note` says so per row.
+In JSON the same appears as `truncated`, `truncation` (`read-cap` or
+`token-cap`) and, for a read cap only, `bytes_packed`. See the man page's
+TRUNCATION section.
+
 ### Clipboard (Windows)
 
 ```sh

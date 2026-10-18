@@ -23,10 +23,16 @@ int format_parse(const char *s);
 typedef struct {
     const char *commit;        /* short SHA, or NULL outside a work tree */
     size_t files;              /* files included */
-    size_t bytes;              /* content bytes of those files */
+    size_t bytes;              /* bytes on disk of those files */
     size_t tokens;             /* estimated content tokens of those files */
     unsigned long long digest; /* FNV-1a-64 over each path + NUL, in order */
     size_t redactions;          /* 0 when --redact was off or found nothing */
+    /* Files whose content did not arrive whole.  `bytes` is measured on disk
+     * while `tokens` is measured on what was actually read, so the two only
+     * describe the same thing when nothing was dropped - `bytes_packed` makes
+     * that explicit. */
+    size_t truncated;           /* 0 when nothing was truncated */
+    size_t bytes_packed;        /* 0 means "same as `bytes`" */
 } format_manifest;
 
 void format_open(strbuf *b, const char *root_display, int fmt,

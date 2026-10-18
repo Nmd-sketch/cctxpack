@@ -96,6 +96,82 @@ TEST read_byte_cap_truncates(void)
     PASS();
 }
 
+/* `bytes` is measured on disk while `lines`/`tokens` are measured on what was
+ * read, so a read-capped file must report how much was actually packed.
+ * Without `packed` the two numbers silently describe different things. */
+TEST read_reports_packed_and_reason(void)
+{
+    size_t n = READ_CAP_DEFAULT + 4096;
+    char *data = malloc(n);
+    ASSERT(data != NULL);
+    memset(data, 'x', n);
+    ASSERT(test_write_file("r6.txt", data, n) == 0);
+    free(data);
+    read_file rf;
+    ASSERT_EQ(0, read_file_open("r6.txt", 0, &rf));
+    ASSERT(rf.truncated);
+    ASSERT_EQ(TRUNC_READ_CAP, rf.trunc_reason);
+    ASSERT_EQ(READ_CAP_DEFAULT, rf.packed);
+    ASSERT((uint64_t)rf.packed < rf.file_size);
+    /* `len` includes the marker, `packed` does not */
+    ASSERT(rf.len > rf.packed);
+    read_file_free(&rf);
+    test_rm_rf("r6.txt");
+    PASS();
+}
+
+TEST read_small_file_is_not_truncated(void)
+{
+    ASSERT(test_write_file("r7.txt", "short\n", 6) == 0);
+    read_file rf;
+    ASSERT_EQ(0, read_file_open("r7.txt", 0, &rf));
+    ASSERT(!rf.truncated);
+    ASSERT_EQ(TRUNC_NONE, rf.trunc_reason);
+    ASSERT_EQ(rf.len, rf.packed);
+    ASSERT_EQ((uint64_t)rf.len, rf.file_size);
+    read_file_free(&rf);
+    test_rm_rf("r7.txt");
+    PASS();
+}
+
+/* A token cap must be honoured even when the read cap fired first.  This used
+ * to be an `else if`, so --max-file-tokens was silently ignored for every file
+ * at or above READ_CAP_DEFAULT - a 4 MB read is ~1.2M estimated tokens, so the
+ * user got roughly 600x the budget they asked for.
+ *
+ * Doubles as the guard against the quadratic cut loop this newly exposed: the
+ * old backward scan re-estimated the whole prefix once per line, which on this
+ * file never completes. */
+TEST read_token_cap_still_applies_over_read_cap(void)
+{
+    size_t n = READ_CAP_DEFAULT + 4096;
+    char *data = malloc(n);
+    ASSERT(data != NULL);
+    for (size_t i = 0; i < n; i++)
+        data[i] = (char)('a' + (i % 26));
+    ASSERT(test_write_file("r8.txt", data, n) == 0);
+    free(data);
+    read_file rf;
+    ASSERT_EQ(0, read_file_open("r8.txt", 500, &rf));
+    ASSERT(rf.truncated);
+    /* the token cap is the binding constraint and is what gets reported */
+    ASSERT_EQ(TRUNC_TOKEN_CAP, rf.trunc_reason);
+    /* the marker itself is charged against the cap, so the result fits the
+     * request rather than exceeding it by the marker's own size */
+    ASSERT(tokens_estimate(rf.data, rf.len) <= 500);
+    read_file_free(&rf);
+    test_rm_rf("r8.txt");
+    PASS();
+}
+
+TEST read_trunc_reason_names(void)
+{
+    ASSERT(strcmp(trunc_reason_name(TRUNC_NONE), "none") == 0);
+    ASSERT(strcmp(trunc_reason_name(TRUNC_READ_CAP), "read-cap") == 0);
+    ASSERT(strcmp(trunc_reason_name(TRUNC_TOKEN_CAP), "token-cap") == 0);
+    PASS();
+}
+
 TEST read_missing_file_fails(void)
 {
     read_file rf;
@@ -110,5 +186,9 @@ SUITE(read_suite)
     RUN_TEST(read_nul_after_sniff_is_text);
     RUN_TEST(read_token_cap_truncates_with_marker);
     RUN_TEST(read_byte_cap_truncates);
+    RUN_TEST(read_reports_packed_and_reason);
+    RUN_TEST(read_small_file_is_not_truncated);
+    RUN_TEST(read_token_cap_still_applies_over_read_cap);
+    RUN_TEST(read_trunc_reason_names);
     RUN_TEST(read_missing_file_fails);
 }
