@@ -10,6 +10,7 @@ SUITE_EXTERN(tokens_suite);
 SUITE_EXTERN(format_suite);
 SUITE_EXTERN(config_suite);
 SUITE_EXTERN(pack_suite);
+SUITE_EXTERN(redact_suite);
 SUITE_EXTERN(cli_suite);
 SUITE_EXTERN(e2e_suite);
 
@@ -24,6 +25,7 @@ int main(int argc, char **argv)
     RUN_SUITE(format_suite);
     RUN_SUITE(config_suite);
     RUN_SUITE(pack_suite);
+RUN_SUITE(redact_suite);
     RUN_SUITE(cli_suite);
     RUN_SUITE(e2e_suite);
     GREATEST_MAIN_END();

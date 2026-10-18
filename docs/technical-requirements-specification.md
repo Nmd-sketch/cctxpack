@@ -123,10 +123,29 @@ inbound opportunities (recruiters/companies referencing the profile).
   comments, blank lines skipped) applied *after* `.gitignore` and `--exclude`, to
   drop files from the bundle without untracking them. Absent file is not an error.
 - **FR-023** (M) Provenance manifest — every bundle records commit SHA (or
-  `unversioned`), file count, content bytes, content tokens, and a digest
-  identifying the file set. Rendered per format. Contains **no wall-clock time**,
-  so identical inputs still produce byte-identical output. The manifest's own
-  cost is charged against `--budget` and included in the reported total.
+  `unversioned`), file count, content bytes, content tokens, a digest
+  identifying the file set, and (when `--redact` found any) the replacement
+  count. Rendered per format. Contains **no wall-clock time**, so identical
+  inputs still produce byte-identical output. The manifest's own cost is charged
+  against `--budget` and included in the reported total.
+- **FR-024** (M) `--redact` — **opt-in** replacement of credential-shaped
+  substrings with `[REDACTED:<kind>]` markers. Off by default: the tool's core
+  promise is fidelity, and silently rewriting bytes would break it.
+  Guarantees:
+  - only the secret span is replaced, so `db_password = "<secret>"` becomes
+    `db_password = "[REDACTED:password]"` and still parses;
+  - the **line count is preserved exactly**, including for multi-line PEM
+    blocks, so line numbers a consumer was given stay valid;
+  - clean input is returned byte-identical;
+  - high-confidence vendor token shapes and unambiguously-named secret
+    assignments only — **no entropy heuristic**, which would mislabel hashes,
+    base64 assets and minified bundles far more often than it catches anything;
+  - values that look like placeholders (`your-…`, `${ENV}`, `<…>`, `changeme`)
+    are left alone, as are derived values such as `password_hash`;
+  - the count of replacements appears in the bundle manifest (only when
+    non-zero) and on stderr, so a consumer can tell a scrubbed file from an
+    empty one;
+  - rejected with `tree`, which never reads content and would silently no-op.
 
 ### Exit codes
 | Code | Meaning |
@@ -172,11 +191,18 @@ inbound opportunities (recruiters/companies referencing the profile).
   user paths in spawned commands; pathological inputs (huge files, symlink loops,
   hostile names) terminate with a clean error, not a hang or crash.
 - **NFR-09 Code budget** — own source (`src/*.c` + `src/*.h` physical lines,
-  vendor and tests excluded) ≤ 3,500 LOC. Exceeding a module budget (design §2.2)
+  vendor and tests excluded) ≤ 4,000 LOC. Exceeding a module budget (design §2.2)
   triggers a design review, not more code. (Raised 1,800 → 2,000 at the M2 review,
-  then 2,000 → 3,500 at the M3 review: M3 measures 3,075, and the review applied
-  this document's own "measured value + ~15 % headroom" rule rather than
-  trimming working code to fit an estimate. See design §2.2/§12.)
+  2,000 → 3,500 at the M3 review, and 3,500 → 4,000 at the M9 review: M9 measures
+  3,712 with two features landed that the v1 scope had deferred — the provenance
+  manifest and opt-in credential redaction. Each review applied this document's
+  own "measured value + ~15 % headroom" rule rather than trimming working, tested
+  code to fit a pre-implementation estimate. See design §2.2/§12.)
+- **NFR-13 Safe-to-send** — a bundle may only be altered from the bytes on disk
+  when the user asked for it. `--redact` is therefore opt-in (FR-024) and is the
+  only feature that rewrites content; `--max-file-tokens` truncation is reported
+  explicitly. Fidelity is the product's core promise and must never be broken by
+  default.
 - **NFR-10 Documentation** — every flag and command appears in both `--help` and the
   README; requirements changes update this document in the same commit.
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0
@@ -262,6 +288,7 @@ plugins, shell completions (post-v1, low cost).
 | FR-021 | `e2e_diff_patch_emits_hunks` (md + JSON + XML), `e2e_patch_rejected_without_diff` |
 | FR-022 | `e2e_cctxpackignore_layered_on_gitignore` |
 | FR-023 | `test_format.c` (all four formats) + `e2e_manifest_is_deterministic`, `e2e_manifest_does_not_break_budget` |
+| FR-024 | `tests/test_redact.c` (10 unit tests) + `e2e_redact_is_opt_in`, `e2e_redact_is_deterministic`, `e2e_redact_rejected_with_tree`, `format_manifest_redactions_per_format` |
 | — | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
 | FR-014 | `tests/test_config.c` |
 | FR-015 | `tests/test_pack.c` |

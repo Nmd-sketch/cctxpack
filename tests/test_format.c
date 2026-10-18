@@ -140,6 +140,50 @@ TEST format_open_root_and_version(void)
     PASS();
 }
 
+/* The redactions suffix has a different SHAPE in each format (quoted XML
+ * attribute, JSON key, bare md/txt text).  Sharing one fragment between them
+ * produced unparseable JSON and XML. */
+TEST format_manifest_redactions_per_format(void)
+{
+    format_manifest m = TMAN;
+    m.redactions = 3;
+    strbuf sb;
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_MD, &m);
+    ASSERT(strstr(sb.data, "digest=0123456789abcdef redactions=3 -->") != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_TXT, &m);
+    ASSERT(strstr(sb.data, "digest 0123456789abcdef redactions=3") != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_XML, &m);
+    ASSERT(strstr(sb.data, "digest=\"0123456789abcdef\" redactions=\"3\">")
+        != NULL);
+    strbuf_free(&sb);
+
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_JSON, &m);
+    ASSERT(strstr(sb.data, "\"digest\":\"0123456789abcdef\","
+                           "\"redactions\":3}") != NULL);
+    strbuf_free(&sb);
+
+    /* zero must emit nothing at all, in any format */
+    m.redactions = 0;
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_JSON, &m);
+    ASSERT(strstr(sb.data, "redactions") == NULL);
+    strbuf_free(&sb);
+    strbuf_init(&sb);
+    format_open(&sb, "p", FMT_XML, &m);
+    ASSERT(strstr(sb.data, "redactions") == NULL);
+    strbuf_free(&sb);
+    PASS();
+}
+
 TEST format_section_language_hint(void)
 {
     strbuf sb;
@@ -302,6 +346,7 @@ SUITE(format_suite)
     RUN_TEST(format_tree_plain_and_empty);
     RUN_TEST(format_tree_json_array);
     RUN_TEST(format_open_root_and_version);
+    RUN_TEST(format_manifest_redactions_per_format);
     RUN_TEST(format_section_language_hint);
     RUN_TEST(format_section_extends_fence);
     RUN_TEST(format_section_adds_trailing_newline);

@@ -119,6 +119,48 @@ they just stop being packed. A missing file is not an error.
 cctxpack . --query "auth jwt" --budget 6000
 ```
 
+### Redacting credentials before you send a repo to a model
+
+**Opt-in.** Without `--redact` you get exactly the bytes on disk — fidelity is the
+whole point of this tool, and quietly rewriting content would break it.
+
+```sh
+cctxpack . --redact -o safe.md
+# cctxpack: redacted 2 credential(s)
+```
+
+```diff
+- AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+- db_password = "s3cr3t-prod-value"
++ AWS_KEY = "[REDACTED:aws-access-key-id]"
++ db_password = "[REDACTED:password]"
+```
+
+It replaces whole PEM private key blocks, vendor token shapes (`AKIA…`, `ghp_`,
+`github_pat_`, `AIza…`, `xox…`, `sk_live_`, JWTs), and values assigned to
+unambiguously secret names (`password`, `secret`, `api_key`, `access_token`,
+`client_secret`, …) of at least 6 bytes.
+
+Two properties worth knowing:
+
+- **The line count is preserved exactly.** A multi-line key block collapses to a
+  marker plus blank lines, so line numbers you were given still point where they
+  did. Only the secret span is rewritten, so the statement around it still parses.
+- **The count is reported**, in the manifest and on stderr, so an agent can tell
+  a scrubbed file from an empty one.
+
+**What it deliberately does not catch.** There is no entropy heuristic, and that
+is the important limitation: length-and-alphabet scoring mislabels SHA digests,
+base64 assets, lockfile integrity hashes and minified bundles far more often than
+it catches a real key. Placeholders (`your-…`, `${VAR}`, `<…>`, `changeme`) and
+derived values (`password_hash`) are left alone, as are secrets that live only in
+environment variables.
+
+**This is not a security guarantee.** It reduces accidental disclosure of
+committed credentials; it does not replace a secret scanner, and it will miss
+credentials in shapes it does not know. See the man page's REDACTION section for
+the full list.
+
 ### Machine-readable formats
 
 ```sh

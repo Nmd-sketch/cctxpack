@@ -1131,6 +1131,139 @@ TEST e2e_cctxpackignore_layered_on_gitignore(void)
     PASS();
 }
 
+/* --redact is opt-in: without it the bytes must be exactly what is on disk.
+ * Fidelity is the tool's core promise, so this is the load-bearing test. */
+TEST e2e_redact_is_opt_in(void)
+{
+    char *dir = scratch("redact");
+    char *o1 = scratch("e2e_red_plain.md");
+    char *o2 = scratch("e2e_red_on.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && o1 && o2 && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+
+    const char *body =
+        "AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"\n"
+        "db_password = \"s3cr3t-prod-value\"\n"
+        "harmless = \"just a literal\"\n";
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/conf.py", dir);
+    ASSERT(test_write_file(fp, body, strlen(body)) == 0);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "pack . -o \"%s\"", o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *plain = test_read_all(o1, NULL);
+    ASSERT(plain != NULL);
+    ASSERT(strstr(plain, "AKIAIOSFODNN7EXAMPLE") != NULL);
+    ASSERT(strstr(plain, "s3cr3t-prod-value") != NULL);
+    ASSERT(strstr(plain, "REDACTED") == NULL);
+    /* and no manifest claim of scrubbing */
+    ASSERT(strstr(plain, "redactions=") == NULL);
+    free(plain);
+
+    snprintf(args, sizeof(args), "pack . --redact --report -o \"%s\"", o2);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *red = test_read_all(o2, NULL);
+    ASSERT(red != NULL);
+    ASSERT(strstr(red, "AKIAIOSFODNN7EXAMPLE") == NULL);
+    ASSERT(strstr(red, "s3cr3t-prod-value") == NULL);
+    /* the statement around the secret survives */
+    ASSERT(strstr(red, "db_password = \"[REDACTED:password]\"") != NULL);
+    /* and the harmless line is untouched */
+    ASSERT(strstr(red, "harmless = \"just a literal\"") != NULL);
+    /* the manifest tells the consumer something was scrubbed */
+    ASSERT(strstr(red, "redactions=2") != NULL);
+    free(red);
+
+    /* the report line on stderr names the count */
+    char *e = test_read_all(err, NULL);
+    ASSERT(e != NULL);
+    ASSERT(strstr(e, "redacted 2 credential(s)") != NULL);
+    free(e);
+
+    test_rm_rf(dir);
+    free(o1); free(o2); free(err); free(nul); free(dir);
+    PASS();
+}
+
+/* --redact must not disturb determinism. */
+TEST e2e_redact_is_deterministic(void)
+{
+    char *dir = scratch("reddet");
+    char *o1 = scratch("e2e_rd1.md");
+    char *o2 = scratch("e2e_rd2.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && o1 && o2 && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    const char *body = "k = \"AKIAIOSFODNN7EXAMPLE\"\n";
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/a.py", dir);
+    ASSERT(test_write_file(fp, body, strlen(body)) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "pack . --redact -o \"%s\"", o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    snprintf(args, sizeof(args), "pack . --redact -o \"%s\"", o2);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b1 = test_read_all(o1, NULL);
+    char *b2 = test_read_all(o2, NULL);
+    ASSERT(b1 && b2);
+    ASSERT(strcmp(b1, b2) == 0);
+    free(b1);
+    free(b2);
+
+    test_rm_rf(dir);
+    free(o1); free(o2); free(err); free(nul); free(dir);
+    PASS();
+}
+
+/* tree never reads content, so accepting the flag would silently do nothing. */
+TEST e2e_redact_rejected_with_tree(void)
+{
+    char *dir = scratch("redtree");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    ASSERT_EQ(2, run_in(dir, "tree --redact", nul, err));
+    char *e = test_read_all(err, NULL);
+    ASSERT(e != NULL);
+    ASSERT(strstr(e, "--redact is not valid with tree") != NULL);
+    free(e);
+    test_rm_rf(dir);
+    free(err); free(nul); free(dir);
+    PASS();
+}
+
 TEST e2e_patch_rejected_without_diff(void)
 {
     char *dir = scratch("patchonly");
@@ -1212,6 +1345,9 @@ SUITE(e2e_suite)
 RUN_TEST(e2e_json_is_valid_without_tree);
 RUN_TEST(e2e_manifest_is_deterministic);
 RUN_TEST(e2e_manifest_does_not_break_budget);
+RUN_TEST(e2e_redact_is_opt_in);
+RUN_TEST(e2e_redact_is_deterministic);
+RUN_TEST(e2e_redact_rejected_with_tree);
 RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);
     RUN_TEST(e2e_diff_outside_worktree);
     test_rm_rf("ctx_e2e_tmp");

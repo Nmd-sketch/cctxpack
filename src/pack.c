@@ -3,6 +3,7 @@
 #include "format.h"
 #include "glob.h"
 #include "read.h"
+#include "redact.h"
 #include "tokens.h"
 #include "util.h"
 
@@ -139,7 +140,7 @@ static int finish_out(const pack_opts *o, FILE *out, strbuf *clip)
  * the included paths in emission order.  Deliberately excludes the manifest
  * text, which is rendered after the fit and accounted for separately. */
 static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
-    size_t count, format_manifest *man)
+    size_t count, size_t redactions, format_manifest *man)
 {
     unsigned long long h = FNV1A64_INIT;
     size_t bytes = 0, tokens = 0;
@@ -156,6 +157,7 @@ static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
     man->bytes = bytes;
     man->tokens = tokens;
     man->digest = h;
+    man->redactions = redactions;
 }
 
 static size_t est_of(const strbuf *b)
@@ -163,7 +165,31 @@ static size_t est_of(const strbuf *b)
     return b->len ? tokens_estimate(b->data, b->len) : 0;
 }
 
-static int collect(const pack_opts *o, strlist *paths, pack_item **out)
+/* Read one file and, when --redact is on, rewrite credentials in it.
+ * On success the out-parameters point at either rf->data or `scratch`; the
+ * caller must free both rf and scratch.  `redactions` accumulates across the
+ * bundle.
+ *
+ * Redaction happens before the token estimate, so the estimate describes what
+ * the model will actually receive rather than what is on disk. */
+static int load_content(const pack_opts *o, const char *full, read_file *rf,
+    strbuf *scratch, const char **data, size_t *len, size_t *redactions)
+{
+    if (read_file_open(full, o->max_file_tokens, rf) != 0)
+        return -1;
+    *data = rf->data;
+    *len = rf->len;
+    strbuf_init(scratch);
+    if (o->redact && !rf->binary && rf->len) {
+        *redactions += redact_apply(rf->data, rf->len, scratch);
+        *data = scratch->data;
+        *len = scratch->len;
+    }
+    return 0;
+}
+
+static int collect(const pack_opts *o, strlist *paths, pack_item **out,
+    size_t *redactions)
 {
     if (files_discover(o->root, o->fake_ls, paths, NULL) != 0)
         return -1;
@@ -193,7 +219,10 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out)
         char full[4096];
         join_path(full, sizeof(full), o->root, items[i].path);
         read_file rf;
-        if (read_file_open(full, o->max_file_tokens, &rf) != 0) {
+        strbuf scratch;
+        const char *data;
+        size_t len;
+        if (load_content(o, full, &rf, &scratch, &data, &len, redactions) != 0) {
             fprintf(stderr, "cctxpack: cannot read %s\n", items[i].path);
             free(items);
             return -1;
@@ -209,12 +238,13 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out)
         } else {
             /* FR-007: the per-file token count is the estimate of the content
              * alone, rendered with first=0 so it never depends on position. */
-            items[i].tokens = tokens_estimate(rf.data, rf.len);
-            format_section(&sec, o->format, 0, items[i].path, rf.data, rf.len,
+            items[i].tokens = tokens_estimate(data, len);
+            format_section(&sec, o->format, 0, items[i].path, data, len,
                 items[i].tokens);
         }
         items[i].est = est_of(&sec);
         strbuf_free(&sec);
+        strbuf_free(&scratch);
         read_file_free(&rf);
     }
     *out = items;
@@ -320,7 +350,8 @@ int pack_run(const pack_opts *o)
     strbuf_init(&files_open);
     strbuf_init(&close);
 
-    if (collect(o, &paths, &items) != 0)
+    size_t redactions = 0;
+    if (collect(o, &paths, &items, &redactions) != 0)
         goto cleanup;
 
     /* The manifest reports post-fit totals, so the real header can only be
@@ -396,7 +427,7 @@ int pack_run(const pack_opts *o)
      * lands in `used`, so the reported total is what the bundle actually
      * costs; the reserve above already covered it. */
     format_manifest man;
-    manifest_of(o, items, paths.n, count, &man);
+    manifest_of(o, items, paths.n, count, redactions, &man);
     format_open(&header, o->root_display, o->format, &man);
     used += est_of(&header);
 
@@ -438,6 +469,10 @@ int pack_run(const pack_opts *o)
     wr |= sink_write(out, &clip, tree_in.data, tree_in.len);
     wr |= sink_write(out, &clip, files_open.data, files_open.len);
     int first_item = 1;
+    /* The emit pass redacts again (the file is re-read here) but must NOT
+     * accumulate into the reported count, which collect() already owns - that
+     * would double it. */
+    size_t emit_discard = 0;
     for (size_t i = 0; i < paths.n && wr == 0; i++) {
         if (!items[i].included)
             continue;
@@ -450,13 +485,18 @@ int pack_run(const pack_opts *o)
             char full[4096];
             join_path(full, sizeof(full), o->root, items[i].path);
             read_file rf;
-            if (read_file_open(full, o->max_file_tokens, &rf) != 0) {
+            strbuf scratch;
+            const char *data;
+            size_t len;
+            if (load_content(o, full, &rf, &scratch, &data, &len,
+                    &emit_discard) != 0) {
                 fprintf(stderr, "cctxpack: cannot read %s\n", items[i].path);
                 strbuf_free(&sec);
                 goto cleanup;
             }
-            format_section(&sec, o->format, first_item, items[i].path, rf.data,
-                rf.len, items[i].tokens);
+            format_section(&sec, o->format, first_item, items[i].path, data,
+                len, items[i].tokens);
+            strbuf_free(&scratch);
             read_file_free(&rf);
         }
         wr |= sink_write(out, &clip, sec.data, sec.len);
@@ -471,6 +511,10 @@ int pack_run(const pack_opts *o)
     if (rc == 0 && finish_out(o, out, &clip) != 0)
         rc = 1;
     strbuf_free(&clip);
+    /* Say what was scrubbed.  An agent receiving a bundle cannot otherwise
+     * tell an empty config from a scrubbed one, so this is not noise. */
+    if (o->redact && redactions > 0)
+        fprintf(stderr, "cctxpack: redacted %zu credential(s)\n", redactions);
     if (rc == 0 && (o->want_report || o->has_budget))
         report(o, items, paths.n, count, truncated, used);
 

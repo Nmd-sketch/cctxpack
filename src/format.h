@@ -25,6 +25,7 @@ typedef struct {
     size_t bytes;              /* content bytes of those files */
     size_t tokens;             /* estimated content tokens of those files */
     unsigned long long digest; /* FNV-1a-64 over each path + NUL, in order */
+    size_t redactions;          /* 0 when --redact was off or found nothing */
 } format_manifest;
 
 void format_open(strbuf *b, const char *root_display, int fmt,

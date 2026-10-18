@@ -26,6 +26,7 @@ typedef struct {
     int clipboard;
     int staged;
     int patch;
+    int redact;
     const char *commit;
     const char *query;
     const char *output;

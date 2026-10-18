@@ -118,6 +118,87 @@ Show usage.
 .TP
 .B \-V, \-\-version
 Show version.
+.SH REDACTION
+.B \-\-redact
+replaces credential-shaped substrings with
+.BI [REDACTED: kind ]
+markers. It is
+.BR "opt-in" :
+without the flag cctxpack emits exactly the bytes on disk, because fidelity is
+the tool's core promise and silently rewriting content would break it.
+.PP
+What is replaced:
+.IP \(bu 2
+Whole PEM private key blocks, from
+.B BEGIN
+through the matching
+.BR "END" ;
+.IP \(bu 2
+Vendor token shapes:
+.BR AKIA… ,
+.BR ghp_ / gho_ / ghs_ / ghr_ ,
+.BR github_pat_ ,
+.BR AIza… ,
+.BR xox… ,
+.BR sk_live_ ,
+and JWTs;
+.IP \(bu 2
+Values assigned to unambiguously secret names
+.RB ( password ,
+.BR secret ,
+.BR api_key ,
+.BR access_token ,
+.BR client_secret ,
+and similar), of at least 6 bytes.
+.PP
+What is deliberately
+.B not
+replaced:
+.IP \(bu 2
+Anything matched by an entropy heuristic. This is the single most important
+limitation: length-and-alphabet scoring mislabels SHA digests, base64 assets,
+lockfile integrity hashes and minified bundles far more often than it catches a
+real key, and misses keys that live in environment variables rather than in
+source.
+.IP \(bu 2
+Placeholders
+.RB ( your… ,
+.BR ${VAR} ,
+.BR <…> ,
+.BR changeme ,
+and similar) and derived values such as
+.BR password_hash .
+.IP \(bu 2
+Secret-shaped names embedded in a longer identifier, so
+.B password_hash
+is not read as
+.BR password .
+.PP
+Two guarantees worth relying on:
+.IP \(bu 2
+Only the secret
+.I span
+is replaced, so
+.B db_password = "<the-secret>"
+becomes
+.B db_password = "<the-secret>"
+and still parses.
+.IP \(bu 2
+The
+.I line count
+is preserved exactly, including for multi-line key blocks, so line numbers a
+consumer was given remain valid.
+.PP
+The number of replacements appears in the bundle manifest (as
+.B redactions
+only when non-zero) and on stderr as
+.RB \(lq cctxpack: "redacted N credential(s)" \(rq.
+A consumer can therefore tell a scrubbed file from an empty one.
+.B \-\-redact
+is rejected with
+.B tree
+(exit 2), which never reads file content and would otherwise silently do
+nothing.
 .SH CONFIGURATION
 The nearest
 .B .cctxpack.json

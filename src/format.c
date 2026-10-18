@@ -120,7 +120,35 @@ void format_open(strbuf *b, const char *root_display, int fmt,
 {
     char commit[16];
     const char *c = man && man->commit ? man->commit : "unversioned";
-    /* defensive: never let a long value break the surrounding markup */
+    /* redactions is emitted only when non-zero, so a bundle that was not
+     * scrubbed carries no field claiming it might have been.  The opening and
+     * closing fragments differ per format: XML needs a quoted attribute, JSON
+     * a named key, md/txt bare text. */
+    char rnum[24], rpre[24], rpost[4];
+    size_t red = man ? man->redactions : 0;
+    const char *pre = "", *post = "";
+    rnum[0] = '\0';          /* must be a valid empty string when red == 0 */
+    rpre[0] = '\0';
+    rpost[0] = '\0';
+    if (red) {
+        snprintf(rnum, sizeof(rnum), "%zu", red);
+        pre = rpre;
+        post = rpost;
+        switch (fmt) {
+        case FMT_XML:
+            snprintf(rpre, sizeof(rpre), " redactions=\"");
+            snprintf(rpost, sizeof(rpost), "\"");
+            break;
+        case FMT_JSON:
+            snprintf(rpre, sizeof(rpre), ",\"redactions\":");
+            rpost[0] = '\0';
+            break;
+        default:
+            snprintf(rpre, sizeof(rpre), " redactions=");
+            rpost[0] = '\0';
+            break;
+        }
+    }
     size_t cn = strlen(c);
     if (cn >= sizeof(commit)) {
         memcpy(commit, c, sizeof(commit) - 1);
@@ -133,26 +161,26 @@ void format_open(strbuf *b, const char *root_display, int fmt,
                          "<context root=\"");
         append_xml_escaped(b, root_display, strlen(root_display));
         strbuf_appendf(b, "\" version=\"%s\" commit=\"%s\" files=\"%zu\" "
-                           "bytes=\"%zu\" tokens=\"%zu\" digest=\"%016llx\">\n",
+                           "bytes=\"%zu\" tokens=\"%zu\" digest=\"%016llx\"%s%s%s>\n",
             CTX_VERSION, c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0);
+            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
         break;
     case FMT_JSON:
         strbuf_append(b, "{\"root\":");
         append_json_string(b, root_display);
         strbuf_appendf(b, ",\"version\":\"%s\",\"manifest\":{\"commit\":\"%s\","
                            "\"files\":%zu,\"bytes\":%zu,\"tokens\":%zu,"
-                           "\"digest\":\"%016llx\"},\"tree\":",
+                           "\"digest\":\"%016llx\"%s%s%s},\"tree\":",
             CTX_VERSION, c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0);
+            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
         break;
     case FMT_TXT:
         strbuf_appendf(b, "cctxpack bundle: %s (cctxpack %s)\n"
             "manifest: commit %s  files %zu  bytes %zu  tokens %zu  "
-            "digest %016llx\n\n",
+            "digest %016llx%s%s%s\n\n",
             root_display, CTX_VERSION, c, man ? man->files : 0,
             man ? man->bytes : 0, man ? man->tokens : 0,
-            man ? man->digest : 0);
+            man ? man->digest : 0, pre, rnum, post);
         break;
     default:
         strbuf_appendf(b, "# Context bundle: %s\n", root_display);
@@ -162,9 +190,9 @@ void format_open(strbuf *b, const char *root_display, int fmt,
         /* Machine-greppable and invisible when rendered. */
         strbuf_appendf(b,
             "<!-- cctxpack-manifest commit=%s files=%zu bytes=%zu tokens=%zu "
-            "digest=%016llx -->\n\n",
+            "digest=%016llx%s%s%s -->\n\n",
             c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0);
+            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
         break;
     }
 }

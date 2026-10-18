@@ -29,6 +29,7 @@ enum {
     OPT_CLIPBOARD,
     OPT_STAGED,
     OPT_PATCH,
+    OPT_REDACT,
     OPT_HELP,
     OPT_VERSION
 };
@@ -47,6 +48,7 @@ static const struct option longopts[] = {
     { "clipboard", no_argument, NULL, OPT_CLIPBOARD },
     { "staged", no_argument, NULL, OPT_STAGED },
     { "patch", no_argument, NULL, OPT_PATCH },
+    { "redact", no_argument, NULL, OPT_REDACT },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -76,6 +78,8 @@ void cli_help(void)
            "  --clipboard           copy the bundle to the Windows clipboard\n"
            "  --staged              diff: staged changes only\n"
            "  --patch               diff: emit the unified diff instead of whole files\n"
+           "  --redact              replace credential-shaped text with\n"
+           "                        [REDACTED:kind] markers (opt-in; see NOTES)\n"
            "\n"
            "  diff reports staged, unstaged and untracked changes by default;\n"
            "  deleted files are never included.\n"
@@ -287,6 +291,7 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     o->clipboard = 0;
     o->staged = 0;
     o->patch = 0;
+    o->redact = 0;
     o->query = NULL;
     o->output = NULL;
     o->fake_ls = NULL;
@@ -392,6 +397,9 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
         case OPT_PATCH:
             o->patch = 1;
             break;
+        case OPT_REDACT:
+            o->redact = 1;
+            break;
         case OPT_HELP:
             cli_help();
             *exit_code = 0;
@@ -418,6 +426,12 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     }
     if (o->patch && strcmp(cmd, "diff") != 0) {
         *exit_code = usage_error("--patch is only valid with diff", NULL);
+        return CLI_EXIT;
+    }
+    if (o->redact && strcmp(cmd, "tree") == 0) {
+        /* tree never reads file content, so accepting the flag would be
+         * silently doing nothing */
+        *exit_code = usage_error("--redact is not valid with tree", NULL);
         return CLI_EXIT;
     }
     if (strcmp(cmd, "diff") == 0) {
