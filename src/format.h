@@ -1,6 +1,7 @@
 #ifndef CTX_FORMAT_H
 #define CTX_FORMAT_H
 
+#include "outline.h"
 #include "util.h"
 
 #include <stddef.h>
@@ -42,5 +43,13 @@ void format_section(strbuf *b, int fmt, int first, const char *path,
 void format_binary(strbuf *b, int fmt, int first, const char *path,
     size_t size);
 void format_close(strbuf *b, int fmt);
+
+/* Render a declaration outline in place of a file's content.  `first` has the
+ * same meaning as in format_section (the JSON array separator).  For JSON the
+ * outline is a STRUCTURED array of {line, decl} rather than text, because that
+ * is the machine path and a consumer can select from an array but not from
+ * prose. */
+void format_outline(strbuf *b, int fmt, int first, const char *path,
+    const outline_list *ol, size_t tokens);
 
 #endif

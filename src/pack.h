@@ -27,6 +27,7 @@ typedef struct {
     int staged;
     int patch;
     int redact;
+    int outline;
     const char *commit;
     const char *query;
     const char *output;
@@ -35,8 +36,7 @@ typedef struct {
 
 int pack_run(const pack_opts *o);
 
-size_t pack_fit(const size_t *ests, size_t n, size_t remaining,
-    unsigned char *included);
+/* pack_fit() lives in fit.h. */
 
 /* Relevance score of `path` for a whitespace-separated `query`: occurrences of
  * each term, counting a hit in the basename twice (FR-015). */

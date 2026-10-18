@@ -6,15 +6,15 @@ because cctxpack does not estimate them.
 
 | Corpus | Files | Aggregate | Median | p90 | Worst | Under |
 |---|---:|---:|---:|---:|---:|---:|
+| cctxpack | 76 | +10.50% | +8.02% | +35.66% | -26.84% | 22.4% |
 | sniff | 99 | +24.60% | +32.21% | +52.00% | -2.45% | 1.0% |
-| cctxpack | 64 | +10.40% | +5.59% | +36.77% | -26.11% | 26.6% |
 | .agency-agents | 336 | +30.20% | +31.39% | +45.96% | -17.32% | 2.7% |
 
 Per dominant script class:
 
 | Corpus | Class | Files | Median | Worst |
 |---|---|---:|---:|---:|
+| cctxpack | ascii | 76 | +8.02% | -26.84% |
 | sniff | ascii | 99 | +32.21% | -2.45% |
-| cctxpack | ascii | 64 | +5.59% | -26.11% |
 | .agency-agents | ascii | 327 | +31.67% | -8.87% |
 | .agency-agents | cjk | 9 | +22.25% | -17.32% |

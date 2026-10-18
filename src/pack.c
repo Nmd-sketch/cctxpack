@@ -1,6 +1,7 @@
 #include "pack.h"
 
 #include "format.h"
+#include "fit.h"
 #include "glob.h"
 #include "read.h"
 #include "redact.h"
@@ -27,23 +28,18 @@ typedef struct {
     int binary;
     int truncated;
     int included;
+    /* Outline, when --outline is on and the file parsed.  Parsed once in
+     * collect(); rendered twice (once to price it, once to emit), because
+     * rendering is cheap and re-parsing is not. */
+    outline_list ol;
+    size_t ol_est;
+    size_t ol_tokens;
+    int ol_ok;
+    /* Set when this file is rendered as an outline rather than as content. */
+    int as_outline;
 } pack_item;
 
-size_t pack_fit(const size_t *ests, size_t n, size_t remaining,
-    unsigned char *included)
-{
-    size_t count = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (ests[i] <= remaining) {
-            included[i] = 1;
-            remaining -= ests[i];
-            count++;
-        } else {
-            included[i] = 0;
-        }
-    }
-    return count;
-}
+
 
 static int cmp_item(const void *a, const void *b)
 {
@@ -244,6 +240,36 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out,
         }
         items[i].est = est_of(&sec);
         strbuf_free(&sec);
+
+        /* Outline is built from the (possibly redacted) content, and priced
+         * with first=0 so the estimate never depends on position - the same
+         * rule FR-007 applies to content. */
+        if (o->outline && !rf.binary) {
+            if (outline_build(data, len, items[i].path, &items[i].ol) == 0) {
+                strbuf osec, otext;
+                strbuf_init(&osec);
+                strbuf_init(&otext);
+                for (size_t k = 0; k < items[i].ol.n; k++) {
+                    char l[64];
+                    int m = snprintf(l, sizeof(l), "%6zu: ",
+                        items[i].ol.v[k].line);
+                    if (m > 0)
+                        strbuf_appendn(&otext, l, (size_t)m);
+                    strbuf_append(&otext, items[i].ol.v[k].decl);
+                    strbuf_append(&otext, "\n");
+                }
+                items[i].ol_tokens = tokens_estimate(otext.data, otext.len);
+                format_outline(&osec, o->format, 0, items[i].path,
+                    &items[i].ol, items[i].ol_tokens);
+                items[i].ol_ok = 1;
+                items[i].ol_est = est_of(&osec);
+                strbuf_free(&osec);
+                strbuf_free(&otext);
+            } else {
+                /* unparseable: the caller sends the full text instead */
+                outline_free(&items[i].ol);
+            }
+        }
         strbuf_free(&scratch);
         read_file_free(&rf);
     }
@@ -378,10 +404,36 @@ int pack_run(const pack_opts *o)
     if (o->want_tree)
         format_tree(&tree_all, paths.v, paths.n, o->format);
 
-    if (o->has_budget) {
-        size_t reserve = header_reserve + est_of(&tree_all)
-            + est_of(&files_open) + est_of(&close);
-        size_t remaining = o->budget > reserve ? o->budget - reserve : 0;
+    size_t ol_count = 0;
+    size_t reserve = header_reserve + est_of(&tree_all)
+        + est_of(&files_open) + est_of(&close);
+    size_t remaining = o->budget > reserve ? o->budget - reserve : 0;
+    if (o->has_budget && o->outline) {
+        /* Progressive disclosure (FR-025), single pass in relevance order:
+         * a file takes its whole body if that fits, otherwise its outline if
+         * that fits, otherwise it is dropped and reported.
+         *
+         * An earlier two-pass version - all full text first, then outlines
+         * with whatever was left - turned out to be useless: the first pass
+         * always consumed the entire budget, so --outline --budget N produced
+         * exactly what --budget N produced.  Deciding per file is what makes
+         * the repository stay representable while the most relevant files
+         * still arrive complete. */
+        for (size_t i = 0; i < paths.n; i++) {
+            if (items[i].est <= remaining) {
+                items[i].included = 1;
+                remaining -= items[i].est;
+                count++;
+            } else if (items[i].ol_ok && items[i].ol_est <= remaining) {
+                items[i].included = 1;
+                items[i].as_outline = 1;
+                items[i].est = items[i].ol_est;
+                remaining -= items[i].ol_est;
+                ol_count++;
+                count++;
+            }
+        }
+    } else if (o->has_budget) {
         for (size_t i = 0; i < paths.n; i++) {
             if (items[i].est <= remaining) {
                 items[i].included = 1;
@@ -389,18 +441,30 @@ int pack_run(const pack_opts *o)
                 count++;
             }
         }
-        if (count == 0) {
-            fprintf(stderr,
-                "cctxpack: nothing fits the budget (reserve %zu, budget %zu)\n",
-                reserve, o->budget);
-            report(o, items, paths.n, 0, 0, 0);
-            rc = 3;
-            goto cleanup;
+    } else if (o->outline) {
+        /* No budget: the caller asked for outlines, so every parseable file
+         * becomes one. */
+        for (size_t i = 0; i < paths.n; i++) {
+            if (items[i].ol_ok && !items[i].binary) {
+                items[i].included = 1;
+                items[i].as_outline = 1;
+                items[i].est = items[i].ol_est;
+                ol_count++;
+            }
         }
+        count = ol_count;
     } else {
         count = paths.n;
         for (size_t i = 0; i < paths.n; i++)
             items[i].included = 1;
+    }
+    if (o->has_budget && count == 0) {
+        fprintf(stderr,
+            "cctxpack: nothing fits the budget (reserve %zu, budget %zu)\n",
+            reserve, o->budget);
+        report(o, items, paths.n, 0, 0, 0);
+        rc = 3;
+        goto cleanup;
     }
 
     for (size_t i = 0; i < paths.n; i++) {
@@ -481,6 +545,10 @@ int pack_run(const pack_opts *o)
         if (items[i].binary) {
             format_binary(&sec, o->format, first_item, items[i].path,
                 (size_t)items[i].size);
+        } else if (items[i].as_outline) {
+            /* Already parsed and stored in collect(); no second read needed. */
+            format_outline(&sec, o->format, first_item, items[i].path,
+                &items[i].ol, items[i].ol_tokens);
         } else {
             char full[4096];
             join_path(full, sizeof(full), o->root, items[i].path);
@@ -526,6 +594,10 @@ cleanup:
     strbuf_free(&close);
     strlist_free(&paths);
     strlist_free(&inc_paths);
+    if (items) {
+        for (size_t i = 0; i < paths.n; i++)
+            outline_free(&items[i].ol);
+    }
     free(items);
     return rc;
 }

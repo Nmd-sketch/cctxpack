@@ -4,6 +4,7 @@
 #include "format.h"
 #include "glob.h"
 #include "read.h"
+#include "outline.h"
 #include "tokens.h"
 #include "util.h"
 
@@ -23,6 +24,42 @@ static int discover(const pack_opts *o, strlist *paths)
     root_filter(paths, &o->path_args);
     glob_filter(paths, &o->include, &o->exclude);
     return 0;
+}
+
+/* Lines and tokens that would ACTUALLY BE SENT for a file: the outline when
+ * --outline is on and the file parses, otherwise the content.
+ *
+ * Shared by both count paths so `count --outline` cannot silently disagree
+ * with `pack --outline` - the same reason --redact is rejected where it would
+ * be a no-op.  `ol` receives the outline when one was built. */
+static void count_of(const pack_opts *o, const char *path, const char *data,
+    size_t len, size_t *lines, size_t *tokens, outline_list *ol)
+{
+    memset(ol, 0, sizeof(*ol));
+    *lines = 0;
+    *tokens = 0;
+    if (o->outline && outline_build(data, len, path, ol) == 0) {
+        strbuf t;
+        strbuf_init(&t);
+        for (size_t k = 0; k < ol->n; k++) {
+            char l[64];
+            int m = snprintf(l, sizeof(l), "%6zu: ", ol->v[k].line);
+            if (m > 0)
+                strbuf_appendn(&t, l, (size_t)m);
+            strbuf_append(&t, ol->v[k].decl);
+            strbuf_append(&t, "\n");
+        }
+        *tokens = tokens_estimate(t.data, t.len);
+        *lines = ol->n;
+        strbuf_free(&t);
+        return;
+    }
+    outline_free(ol);
+    for (size_t k = 0; k < len; k++) {
+        if (data[k] == '\n')
+            (*lines)++;
+    }
+    *tokens = tokens_estimate(data, len);
 }
 
 static int cmd_count_json(const pack_opts *o, const strlist *paths)
@@ -47,13 +84,12 @@ static int cmd_count_json(const pack_opts *o, const strlist *paths)
             break;
         }
         size_t lines = 0, tokens = 0;
-        if (!rf.binary) {
-            for (size_t k = 0; k < rf.len; k++) {
-                if (rf.data[k] == '\n')
-                    lines++;
-            }
-            tokens = tokens_estimate(rf.data, rf.len);
-        }
+        outline_list ol;
+        if (!rf.binary)
+            count_of(o, paths->v[i], rf.data, rf.len, &lines, &tokens, &ol);
+        else
+            memset(&ol, 0, sizeof(ol));
+        outline_free(&ol);
         cJSON *f = cJSON_CreateObject();
         cJSON_AddItemToObject(f, "path", cJSON_CreateString(paths->v[i]));
         cJSON_AddItemToObject(f, "bytes",
@@ -101,13 +137,12 @@ static int cmd_count_table(const pack_opts *o, const strlist *paths)
             return 1;
         }
         size_t lines = 0, tokens = 0;
-        if (!rf.binary) {
-            for (size_t k = 0; k < rf.len; k++) {
-                if (rf.data[k] == '\n')
-                    lines++;
-            }
-            tokens = tokens_estimate(rf.data, rf.len);
-        }
+        outline_list ol;
+        if (!rf.binary)
+            count_of(o, paths->v[i], rf.data, rf.len, &lines, &tokens, &ol);
+        else
+            memset(&ol, 0, sizeof(ol));
+        outline_free(&ol);
         printf("%9llu %9zu %9zu  %s\n", (unsigned long long)rf.file_size, lines,
             tokens, paths->v[i]);
         tb += rf.file_size;

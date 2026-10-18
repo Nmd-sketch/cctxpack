@@ -1,6 +1,7 @@
 #include "greatest.h"
 
 #include "cJSON.h"
+#include "fit.h"
 #include "format.h"
 #include "helpers.h"
 #include "pack.h"

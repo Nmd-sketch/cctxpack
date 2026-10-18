@@ -444,3 +444,57 @@ void format_close(strbuf *b, int fmt)
     else if (fmt == FMT_XML)
         strbuf_append(b, "</context>\n");
 }
+
+/* Render a declaration outline instead of a file's content.  The md header
+ * carries the declaration count and the estimate, so a consumer can tell how
+ * much it is NOT being told. */
+void format_outline(strbuf *b, int fmt, int first, const char *path,
+    const outline_list *ol, size_t tokens)
+{
+    switch (fmt) {
+    case FMT_JSON: {
+        if (!first)
+            strbuf_append(b, ",");
+        strbuf_append(b, "{\"path\":");
+        append_json_string(b, path);
+        strbuf_appendf(b, ",\"tokens\":%zu,\"outline\":[", tokens);
+        for (size_t i = 0; i < ol->n; i++) {
+            if (i)
+                strbuf_append(b, ",");
+            strbuf_appendf(b, "{\"line\":%zu,\"decl\":",
+                ol->v[i].line);
+            append_json_string(b, ol->v[i].decl);
+            strbuf_append(b, "}");
+        }
+        strbuf_append(b, "]}");
+        break;
+    }
+    case FMT_XML:
+        if (!first)
+            strbuf_append(b, "\n");
+        strbuf_appendf(b, "<file path=\"");
+        append_xml_escaped(b, path, strlen(path));
+        strbuf_appendf(b, "\" outline=\"%zu\" tokens=\"%zu\">\n", ol->n,
+            tokens);
+        for (size_t i = 0; i < ol->n; i++) {
+            strbuf_appendf(b, "<item line=\"%zu\">", ol->v[i].line);
+            append_xml_escaped(b, ol->v[i].decl, strlen(ol->v[i].decl));
+            strbuf_append(b, "</item>\n");
+        }
+        strbuf_append(b, "</file>\n");
+        break;
+    case FMT_TXT:
+        strbuf_appendf(b, "===== %s (%zu decls) =====\n", path, ol->n);
+        for (size_t i = 0; i < ol->n; i++)
+            strbuf_appendf(b, "%6zu: %s\n", ol->v[i].line, ol->v[i].decl);
+        strbuf_append(b, "\n");
+        break;
+    default:
+        strbuf_appendf(b, "### %s  (%zu decls, outline)\n", path, ol->n);
+        strbuf_appendf(b, "```%s\n", lang_of(path));
+        for (size_t i = 0; i < ol->n; i++)
+            strbuf_appendf(b, "%6zu: %s\n", ol->v[i].line, ol->v[i].decl);
+        strbuf_append(b, "```\n\n");
+        break;
+    }
+}

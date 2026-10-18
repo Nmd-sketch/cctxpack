@@ -118,6 +118,52 @@ Show usage.
 .TP
 .B \-V, \-\-version
 Show version.
+.SH OUTLINE
+.B \-\-outline
+sends a file's
+.IR declarations " instead of its"
+.IR body :
+its imports and signatures, each with the line number it came from. That is
+enough to know what a repository contains without paying for how it is
+implemented.
+.PP
+The flag has two modes, selected by whether
+.B \-\-budget
+is also given:
+.IP \(bu 2
+.B \-\-outline
+alone
+.PP
+Every parseable file is sent as declarations. Nothing is sent whole.
+.IP \(bu 2
+.BI "\-\-outline " "\-\-budget " N
+.PP
+.IR Progressive .
+One pass in relevance order: a file takes its whole body if that fits, otherwise
+its outline if that fits, otherwise it is dropped and listed in the report. The
+most relevant files arrive complete and the rest of the repository still arrives
+at all, which is the point. The budget remains a hard cap either way.
+.PP
+Files that the scanner cannot account for are sent
+.IR whole ,
+not outlined. Unbalanced braces, an extension outside the supported set, or a
+substantial file yielding nothing recognisable all cause a refusal. A wrong
+outline is worse than none, because a consumer cannot tell them apart. Markdown
+and other prose are not outlined for the same reason: cctxpack does not invent
+structure it cannot see.
+.PP
+With
+.BR \-\-format " " json
+the outline is a structured array rather than rendered text: an object per
+declaration, carrying a
+.B line
+number and the
+.B decl
+text. A consumer can select from that array programmatically;
+it cannot select from prose.
+.B count \-\-outline
+reports what would actually be sent, using the same code path as
+.BR pack .
 .SH REDACTION
 .B \-\-redact
 replaces credential-shaped substrings with

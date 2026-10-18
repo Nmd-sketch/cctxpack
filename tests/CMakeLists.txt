@@ -9,6 +9,7 @@ add_executable(tests
     test_config.c
     test_pack.c
     test_redact.c
+    test_outline.c
     test_cli.c
     ${CMAKE_SOURCE_DIR}/src/cli.c
     ${CMAKE_SOURCE_DIR}/src/config.c
@@ -19,6 +20,8 @@ add_executable(tests
     ${CMAKE_SOURCE_DIR}/src/tokens.c
     ${CMAKE_SOURCE_DIR}/src/pack.c
     ${CMAKE_SOURCE_DIR}/src/score.c
+    ${CMAKE_SOURCE_DIR}/src/fit.c
+    ${CMAKE_SOURCE_DIR}/src/outline.c
     ${CMAKE_SOURCE_DIR}/src/redact.c
     ${CMAKE_SOURCE_DIR}/src/format.c
     ${CMAKE_SOURCE_DIR}/src/util.c
