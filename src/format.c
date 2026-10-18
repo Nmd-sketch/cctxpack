@@ -115,40 +115,74 @@ static void append_json_string(strbuf *b, const char *s)
     cJSON_Delete(j);
 }
 
+/* Append one optional manifest field, in the syntax of `fmt`.
+ *
+ * Emits nothing when `v` is 0, so a bundle that was not scrubbed, truncated or
+ * otherwise altered carries no field claiming it might have been.  The opening
+ * and closing syntax differs per format: XML needs a quoted attribute, JSON a
+ * named key, md/txt bare text.
+ *
+ * Returned as a malloc'd string so several fields can be composed; the caller
+ * frees it.  NULL when nothing is emitted, which renders as an empty %s. */
+static char *man_opt(int fmt, size_t v, const char *name)
+{
+    if (v == 0)
+        return NULL;
+    char *s = NULL;
+    char num[24];
+    snprintf(num, sizeof(num), "%zu", v);
+    const char *pat;
+    switch (fmt) {
+    case FMT_XML: pat = " %s=\"%s\""; break;
+    case FMT_JSON: pat = ",\"%s\":%s"; break;
+    default:       pat = " %s=%s"; break;
+    }
+    size_t need = strlen(pat) + strlen(name) + strlen(num) + 4;
+    s = malloc(need);
+    if (!s)
+        return NULL;
+    snprintf(s, need, pat, name, num);
+    return s;
+}
+
+/* Concatenate up to three optional fragments into one optional fragment. */
+static char *man_opts(int fmt, const format_manifest *man)
+{
+    char *a = man_opt(fmt, man ? man->redactions : 0, "redactions");
+    char *b = man_opt(fmt, man ? man->truncated : 0, "truncated");
+    /* bytes_packed is only meaningful when it differs from `bytes`; zero is
+     * reserved for "identical", which is what manifest_of() encodes. */
+    char *c = man_opt(fmt, man ? man->bytes_packed : 0, "bytes_packed");
+    char *out = NULL;
+    size_t need = 1;
+    for (int i = 0; i < 3; i++) {
+        const char *s = i == 0 ? a : (i == 1 ? b : c);
+        if (s)
+            need += strlen(s);
+    }
+    out = malloc(need);
+    if (out) {
+        out[0] = '\0';
+        for (int i = 0; i < 3; i++) {
+            const char *s = i == 0 ? a : (i == 1 ? b : c);
+            if (s)
+                strcat(out, s);
+        }
+    }
+    free(a);
+    free(b);
+    free(c);
+    return out;
+}
+
 void format_open(strbuf *b, const char *root_display, int fmt,
     const format_manifest *man)
 {
     char commit[16];
     const char *c = man && man->commit ? man->commit : "unversioned";
-    /* redactions is emitted only when non-zero, so a bundle that was not
-     * scrubbed carries no field claiming it might have been.  The opening and
-     * closing fragments differ per format: XML needs a quoted attribute, JSON
-     * a named key, md/txt bare text. */
-    char rnum[24], rpre[24], rpost[4];
-    size_t red = man ? man->redactions : 0;
-    const char *pre = "", *post = "";
-    rnum[0] = '\0';          /* must be a valid empty string when red == 0 */
-    rpre[0] = '\0';
-    rpost[0] = '\0';
-    if (red) {
-        snprintf(rnum, sizeof(rnum), "%zu", red);
-        pre = rpre;
-        post = rpost;
-        switch (fmt) {
-        case FMT_XML:
-            snprintf(rpre, sizeof(rpre), " redactions=\"");
-            snprintf(rpost, sizeof(rpost), "\"");
-            break;
-        case FMT_JSON:
-            snprintf(rpre, sizeof(rpre), ",\"redactions\":");
-            rpost[0] = '\0';
-            break;
-        default:
-            snprintf(rpre, sizeof(rpre), " redactions=");
-            rpost[0] = '\0';
-            break;
-        }
-    }
+    char *opt = man_opts(fmt, man);
+    /* An empty optional fragment must render as an empty string, not NULL. */
+    const char *pre = opt ? opt : "";
     size_t cn = strlen(c);
     if (cn >= sizeof(commit)) {
         memcpy(commit, c, sizeof(commit) - 1);
@@ -161,26 +195,26 @@ void format_open(strbuf *b, const char *root_display, int fmt,
                          "<context root=\"");
         append_xml_escaped(b, root_display, strlen(root_display));
         strbuf_appendf(b, "\" version=\"%s\" commit=\"%s\" files=\"%zu\" "
-                           "bytes=\"%zu\" tokens=\"%zu\" digest=\"%016llx\"%s%s%s>\n",
+                           "bytes=\"%zu\" tokens=\"%zu\" digest=\"%016llx\"%s>\n",
             CTX_VERSION, c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
+            man ? man->tokens : 0, man ? man->digest : 0, pre);
         break;
     case FMT_JSON:
         strbuf_append(b, "{\"root\":");
         append_json_string(b, root_display);
         strbuf_appendf(b, ",\"version\":\"%s\",\"manifest\":{\"commit\":\"%s\","
                            "\"files\":%zu,\"bytes\":%zu,\"tokens\":%zu,"
-                           "\"digest\":\"%016llx\"%s%s%s},\"tree\":",
+                           "\"digest\":\"%016llx\"%s},\"tree\":",
             CTX_VERSION, c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
+            man ? man->tokens : 0, man ? man->digest : 0, pre);
         break;
     case FMT_TXT:
         strbuf_appendf(b, "cctxpack bundle: %s (cctxpack %s)\n"
             "manifest: commit %s  files %zu  bytes %zu  tokens %zu  "
-            "digest %016llx%s%s%s\n\n",
+            "digest %016llx%s\n\n",
             root_display, CTX_VERSION, c, man ? man->files : 0,
             man ? man->bytes : 0, man ? man->tokens : 0,
-            man ? man->digest : 0, pre, rnum, post);
+            man ? man->digest : 0, pre);
         break;
     default:
         strbuf_appendf(b, "# Context bundle: %s\n", root_display);
@@ -190,11 +224,12 @@ void format_open(strbuf *b, const char *root_display, int fmt,
         /* Machine-greppable and invisible when rendered. */
         strbuf_appendf(b,
             "<!-- cctxpack-manifest commit=%s files=%zu bytes=%zu tokens=%zu "
-            "digest=%016llx%s%s%s -->\n\n",
+            "digest=%016llx%s -->\n\n",
             c, man ? man->files : 0, man ? man->bytes : 0,
-            man ? man->tokens : 0, man ? man->digest : 0, pre, rnum, post);
+            man ? man->tokens : 0, man ? man->digest : 0, pre);
         break;
     }
+    free(opt);
 }
 
 static size_t common_prefix_len(const char *a, const char *b)

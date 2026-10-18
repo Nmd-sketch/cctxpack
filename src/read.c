@@ -38,6 +38,15 @@ static int file_size_of(const char *path, uint64_t *out)
 #endif
 }
 
+const char *trunc_reason_name(int reason)
+{
+    switch (reason) {
+    case TRUNC_READ_CAP:  return "read-cap";
+    case TRUNC_TOKEN_CAP: return "token-cap";
+    default:              return "none";
+    }
+}
+
 static int append_marker(read_file *r, const char *marker)
 {
     size_t mlen = strlen(marker);
@@ -56,25 +65,32 @@ static int append_marker(read_file *r, const char *marker)
     return 0;
 }
 
-static void truncate_at_token_cap(read_file *r, size_t max_tokens)
+/* Largest prefix of `r` whose estimate fits `max_tokens`, rounded down to a
+ * line boundary.  Pure: does not touch `r`.
+ *
+ * tokens_estimate is a non-decreasing sum over the prefix, so the cut point is
+ * found by BINARY SEARCH and then rounded down to a line.  Scanning backwards
+ * one line at a time - the obvious way to round - re-estimates the entire
+ * prefix on every step, which is quadratic: on a 4 MB file with
+ * --max-file-tokens 2000 that is ~80,000 passes over 4 MB, and it never
+ * finishes. */
+static size_t token_cut(const read_file *r, size_t max_tokens)
 {
-    if (tokens_estimate(r->data, r->len) <= max_tokens)
-        return;
-    size_t cut = r->len;
-    for (;;) {
-        if (tokens_estimate(r->data, cut) <= max_tokens)
-            break;
-        if (cut == 0)
-            break;
-        cut--;
-        while (cut > 0 && r->data[cut - 1] != '\n')
-            cut--;
+    size_t len = r->len;
+    if (tokens_estimate(r->data, len) <= max_tokens)
+        return len;
+    size_t lo = 0;                   /* empty prefix always fits */
+    size_t hi = len;                 /* and `len` is known not to */
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo + 1) / 2;   /* ceiling, so mid > lo */
+        if (tokens_estimate(r->data, mid) <= max_tokens)
+            lo = mid;
+        else
+            hi = mid - 1;
     }
-    r->len = cut;
-    char marker[96];
-    snprintf(marker, sizeof(marker), "… [truncated at %zu est. tokens]",
-        max_tokens);
-    append_marker(r, marker);
+    while (lo > 0 && r->data[lo - 1] != '\n')
+        lo--;
+    return lo;
 }
 
 int read_file_open(const char *path, size_t max_tokens, read_file *out)
@@ -130,13 +146,44 @@ int read_file_open(const char *path, size_t max_tokens, read_file *out)
     data[len] = '\0';
     out->data = data;
     out->len = len;
-    if (capped) {
-        char marker[64];
+    out->packed = len;
+
+    /* The token cap is applied even when the byte cap already fired.  A 4 MB
+     * read is roughly 1.2M estimated tokens, so skipping the cap here - as an
+     * `else if` did - silently violated an explicit --max-file-tokens for
+     * every file at or above the read cap.
+     *
+     * Order matters: the token cap cuts first, so if it fired it is the
+     * binding constraint and the only one worth reporting.  The byte cap is
+     * still what bounds memory, but when the token cap already cut further it
+     * explains nothing about the result. */
+    int tok_capped = 0;
+    char marker[96];
+    marker[0] = '\0';
+    if (max_tokens > 0) {
+        /* Build the marker first and charge it against the cap.  Cutting to
+         * exactly `max_tokens` and then appending the marker overshoots it by
+         * the marker's own size, which is a small but real violation of the
+         * one guarantee this tool makes.  The marker's text is known up front
+         * because max_tokens is, so there is no circularity. */
+        snprintf(marker, sizeof(marker), "… [truncated at %zu est. tokens]",
+            max_tokens);
+        size_t cost = tokens_estimate(marker, strlen(marker)) + 2;
+        size_t budget = max_tokens > cost ? max_tokens - cost : 0;
+        size_t cut = token_cut(out, budget);
+        if (cut < out->len) {
+            out->len = cut;
+            tok_capped = 1;
+        }
+    }
+    if (tok_capped) {
+        append_marker(out, marker);
+        out->trunc_reason = TRUNC_TOKEN_CAP;
+    } else if (capped) {
         snprintf(marker, sizeof(marker), "… [truncated at %zu byte read cap]",
             (size_t)READ_CAP_DEFAULT);
         append_marker(out, marker);
-    } else if (max_tokens > 0) {
-        truncate_at_token_cap(out, max_tokens);
+        out->trunc_reason = TRUNC_READ_CAP;
     }
     return 0;
 }

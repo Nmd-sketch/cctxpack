@@ -164,6 +164,59 @@ it cannot select from prose.
 .B count \-\-outline
 reports what would actually be sent, using the same code path as
 .BR pack .
+.SH TRUNCATION
+Files are read up to
+.B 4 MiB
+.RB ( READ_CAP_DEFAULT ).
+This is a memory bound over whatever path the user pointed at, not a tuning
+knob, and it is deliberately not configurable: an escape hatch would trade a
+bounded failure for an out-of-memory one. Anything larger is read up to the cap
+and the rest is dropped.
+.PP
+.B \-\-max\-file\-tokens N
+applies on top of that cap, not instead of it.
+.PP
+Whenever content is dropped, cctxpack says so rather than leaving it to be
+inferred.
+.B count
+adds a note column to its table, and in
+.B \-\-format json
+adds
+.B truncated
+plus
+.BR truncation ,
+which is
+.B read\-cap
+or
+.BR token\-cap .
+The two are distinguished because they have opposite remedies: the first is a
+limit you cannot lift with a flag, the second is a limit you set. A token cap
+drops no bytes, so
+.B bytes_packed
+appears only for a read cap.
+.PP
+The same fields
+.RB ( truncated ", " bytes_packed )
+appear in the bundle manifest, and
+.B \-\-report
+names the reasons:
+.PP
+.RS
+cctxpack: included 12 files (3 truncated: 1 at read cap, 2 at token cap), excluded 5
+.RE
+.PP
+Note that
+.B bytes
+in every output means
+.IR "bytes on disk" ,
+while
+.B lines
+and
+.B tokens
+describe what was actually read. Those only describe the same content when
+nothing was dropped, which is why
+.B bytes_packed
+exists.
 .SH REDACTION
 .B \-\-redact
 replaces credential-shaped substrings with

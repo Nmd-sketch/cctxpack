@@ -170,6 +170,41 @@ inbound opportunities (recruiters/companies referencing the profile).
     44,078 → 4,091 tokens), 3.9× across the whole repository (which blends in
     Markdown), 2.5× on an unrelated C++ codebase. Prose is refused by
     design, so a documentation-heavy corpus sees ~no saving.
+- **FR-026** (M) **Truncation is stated, never implied.** Files are read up to a
+  4 MiB cap (`READ_CAP_DEFAULT`) — a memory bound, not a feature — and
+  `--max-file-tokens` may cut further. Whatever is dropped is reported:
+
+  - `count --format json` adds, per truncated file, `truncated: true`,
+    `truncation: "read-cap" | "token-cap"`, and — **only for a read cap**, since
+    a token cap drops no bytes — `bytes_packed`. Totals gain `truncated`, and
+    `bytes_packed` when it differs from `bytes`.
+  - `count`'s table gains a trailing note column carrying the same information,
+    because a truncated row that has to be cross-referenced against JSON to be
+    understood is not much better than silence.
+  - the bundle manifest gains `truncated` and `bytes_packed`, in all four
+    formats.
+  - the `--report` line names the reasons
+    (`(3 truncated: 1 at read cap, 2 at token cap)`).
+
+  Guarantees:
+  - `bytes` **continues to mean on-disk size**. It is the number callers already
+    have; redefining it would silently break them. `bytes_packed` carries what
+    was actually read. See design D-27;
+  - every added field is **omitted when it would be zero**, so a bundle or a
+    `count` run that dropped nothing is byte-identical to one built before this
+    requirement, and never carries a field implying loss that did not occur;
+  - the two causes are **distinguished**, because they have opposite remedies
+    and a boolean cannot be acted on (design D-28);
+  - `--max-file-tokens` is honoured **on top of** the read cap, not instead of
+    it: the previous `else if` silently ignored the flag for every file at or
+    above 4 MiB, so a request for 2,000 tokens received roughly 1.2M (design
+    D-28, D-30);
+  - the truncation marker is **charged against** `--max-file-tokens`, so the
+    result fits the request instead of exceeding it by the size of the tool's own
+    explanation (design D-29);
+  - the read cap is documented in `--help`. It is **not** user-configurable:
+    it bounds peak memory over an untrusted path, and a `--max-bytes 0` escape
+    hatch would trade a bounded failure for an OOM.
 
 ### Exit codes
 | Code | Meaning |
@@ -228,10 +263,13 @@ inbound opportunities (recruiters/companies referencing the profile).
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0
   with `LICENSE` + provenance recorded in `vendor/`.
 - **NFR-13 Safe-to-send** — a bundle may only be altered from the bytes on disk
-  when the user asked for it. `--redact` is therefore opt-in (FR-024), and
-  `--outline` likewise replaces bodies with declarations rather than silently
-  summarising them. `--max-file-tokens` truncation is reported explicitly.
-  Fidelity is the product's core promise and must never be broken by default.
+  when the user asked for it, and **any alteration must be visible to whoever
+  receives it**. `--redact` is therefore opt-in (FR-024) and `--outline` likewise
+  replaces bodies with declarations rather than silently summarising them.
+  Content lost to the read cap or `--max-file-tokens` is reported in the
+  manifest and in `count` (FR-026), not left for the reader to infer from a byte
+  count that disagrees with a token count. Fidelity is the product's core
+  promise and must never be broken quietly.
 
 ## 5. Interfaces
 
@@ -314,7 +352,9 @@ plugins, shell completions (post-v1, low cost).
 | FR-022 | `e2e_cctxpackignore_layered_on_gitignore` |
 | FR-023 | `test_format.c` (all four formats) + `e2e_manifest_is_deterministic`, `e2e_manifest_does_not_break_budget` |
 | FR-024 | `tests/test_redact.c` (10 unit tests) + `e2e_redact_is_opt_in`, `e2e_redact_is_deterministic`, `e2e_redact_rejected_with_tree`, `format_manifest_redactions_per_format` |
-| — | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
+| - | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
+| FR-025 | `tests/test_outline.c` (13 unit tests) + `e2e_outline_modes_and_budget`, `e2e_count_outline_agrees_with_pack` |
+| FR-026 | `tests/test_read.c` (`read_reports_packed_and_reason`, `read_small_file_is_not_truncated`, `read_token_cap_still_applies_over_read_cap`, `read_trunc_reason_names`) + `tests/test_format.c` (`format_manifest_truncation_per_format`, `format_manifest_all_optional_fields`) + `e2e_count_reports_truncation`, `e2e_token_cap_holds_over_read_cap` |
 | FR-014 | `tests/test_config.c` |
 | FR-015 | `tests/test_pack.c` |
 | FR-016 | Windows-only test |

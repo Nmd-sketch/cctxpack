@@ -88,6 +88,12 @@ void cli_help(void)
            "\n"
            "  diff reports staged, unstaged and untracked changes by default;\n"
            "  deleted files are never included.\n"
+           "\n"
+           "  Files above 4 MiB are read only up to that limit, and the bundle\n"
+           "  says so: count reports bytes on disk AND bytes actually packed,\n"
+           "  and any truncation appears in the manifest.  --max-file-tokens\n"
+           "  still applies on top of it.\n"
+           "\n"
            "  --help                show this help\n"
            "  --version             show version\n");
 }

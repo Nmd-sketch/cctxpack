@@ -23,10 +23,13 @@ typedef struct {
     size_t est;
     size_t tokens;
     uint64_t size;
+    /* Bytes actually read, which is `size` unless the file was truncated. */
+    size_t packed;
     long long key;
     long long key2;
     int binary;
     int truncated;
+    int trunc_reason;
     int included;
     /* Outline, when --outline is on and the file parsed.  Parsed once in
      * collect(); rendered twice (once to price it, once to emit), because
@@ -61,8 +64,21 @@ static void report(const pack_opts *o, const pack_item *items, size_t n,
     size_t included, size_t truncated, size_t used)
 {
     fprintf(stderr, "cctxpack: included %zu files", included);
-    if (truncated)
-        fprintf(stderr, " (%zu truncated)", truncated);
+    if (truncated) {
+        size_t rc = 0, tc = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (items[i].trunc_reason == TRUNC_READ_CAP)
+                rc++;
+            else if (items[i].trunc_reason == TRUNC_TOKEN_CAP)
+                tc++;
+        }
+        fprintf(stderr, " (%zu truncated", truncated);
+        if (rc)
+            fprintf(stderr, ": %zu at read cap", rc);
+        if (tc)
+            fprintf(stderr, "%s%zu at token cap", rc ? ", " : ": ", tc);
+        fprintf(stderr, ")");
+    }
     fprintf(stderr, ", excluded %zu\n", n - included);
     for (size_t i = 0; i < n; i++) {
         if (!items[i].included)
@@ -139,12 +155,15 @@ static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
     size_t count, size_t redactions, format_manifest *man)
 {
     unsigned long long h = FNV1A64_INIT;
-    size_t bytes = 0, tokens = 0;
+    size_t bytes = 0, packed = 0, tokens = 0, trunc = 0;
     for (size_t i = 0; i < n; i++) {
         if (!items[i].included)
             continue;
         bytes += (size_t)items[i].size;
+        packed += items[i].packed;
         tokens += items[i].tokens;
+        if (items[i].truncated)
+            trunc++;
         h = fnv1a64(h, items[i].path, strlen(items[i].path) + 1);
     }
     (void)o;
@@ -154,6 +173,10 @@ static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
     man->tokens = tokens;
     man->digest = h;
     man->redactions = redactions;
+    man->truncated = trunc;
+    /* Zero is reserved for "identical to bytes", so an unmodified bundle does
+     * not grow a field; only a bundle that actually lost content says so. */
+    man->bytes_packed = (packed == bytes) ? 0 : packed;
 }
 
 static size_t est_of(const strbuf *b)
@@ -225,7 +248,9 @@ static int collect(const pack_opts *o, strlist *paths, pack_item **out,
         }
         items[i].binary = rf.binary;
         items[i].truncated = rf.truncated;
+        items[i].trunc_reason = rf.trunc_reason;
         items[i].size = rf.file_size;
+        items[i].packed = rf.packed;
         strbuf sec;
         strbuf_init(&sec);
         if (rf.binary) {
@@ -394,6 +419,13 @@ int pack_run(const pack_opts *o)
         worst.bytes = SIZE_MAX;
         worst.tokens = SIZE_MAX;
         worst.digest = 0;
+        /* The optional fields must also be probed at their widest: a manifest
+         * that grows past what the reserve covered would let the bundle
+         * overshoot its own budget through its own header, which is the exact
+         * failure the probe exists to prevent. */
+        worst.redactions = SIZE_MAX;
+        worst.truncated = SIZE_MAX;
+        worst.bytes_packed = SIZE_MAX;
         format_open(&probe, o->root_display, o->format, &worst);
     }
     size_t header_reserve = est_of(&probe);

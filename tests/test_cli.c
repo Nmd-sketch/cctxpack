@@ -5,6 +5,7 @@
 #include "format.h"
 #include "helpers.h"
 #include "pack.h"
+#include "read.h"
 #include "tokens.h"
 #include "util.h"
 
@@ -1407,6 +1408,159 @@ TEST e2e_count_outline_agrees_with_pack(void)
     PASS();
 }
 
+/* `bytes` is measured on disk but `lines`/`tokens` come from what was read, so
+ * a file above the read cap used to report two numbers describing different
+ * quantities with nothing saying so.  Anyone sizing a budget from that is
+ * wrong by the ratio of the file to the cap. */
+TEST e2e_count_reports_truncation(void)
+{
+    char *dir = scratch("trunc");
+    char *out = scratch("e2e_trunc.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+
+    /* one file above the read cap, one ordinary file */
+    char big[1024];
+    snprintf(big, sizeof(big), "%s/big.c", dir);
+    FILE *bf = fopen(big, "wb");
+    ASSERT(bf != NULL);
+    for (size_t i = 0; i < (size_t)READ_CAP_DEFAULT + 4096; i++)
+        fputc('a' + (int)(i % 26), bf);
+    fclose(bf);
+    char small[1024];
+    snprintf(small, sizeof(small), "%s/small.c", dir);
+    ASSERT(test_write_file(small, "int x(void){ return 1; }\n", 25) == 0);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init", dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "count . --format json");
+    ASSERT_EQ(0, run_in(dir, args, out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON *files = cJSON_GetObjectItem(j, "files");
+    cJSON *fb = NULL, *fs = NULL;
+    cJSON *it;
+    cJSON_ArrayForEach(it, files) {
+        cJSON *p = cJSON_GetObjectItem(it, "path");
+        if (p && strcmp(p->valuestring, "big.c") == 0)
+            fb = it;
+        else if (p && strcmp(p->valuestring, "small.c") == 0)
+            fs = it;
+    }
+    ASSERT(fb != NULL);
+    ASSERT(fs != NULL);
+
+    /* the capped file must say so, and must separate disk bytes from packed */
+    ASSERT(cJSON_GetObjectItem(fb, "truncated") != NULL);
+    ASSERT_STR_EQ("read-cap",
+        cJSON_GetObjectItem(fb, "truncation")->valuestring);
+    ASSERT((int)cJSON_GetObjectItem(fb, "bytes")->valueint
+        > (int)cJSON_GetObjectItem(fb, "bytes_packed")->valueint);
+    ASSERT_EQ(READ_CAP_DEFAULT,
+        (int)cJSON_GetObjectItem(fb, "bytes_packed")->valueint);
+
+    /* an unmodified file must carry no truncation fields at all */
+    ASSERT(cJSON_GetObjectItem(fs, "truncated") == NULL);
+    ASSERT(cJSON_GetObjectItem(fs, "bytes_packed") == NULL);
+    ASSERT(cJSON_GetObjectItem(fs, "truncation") == NULL);
+
+    cJSON *total = cJSON_GetObjectItem(j, "total");
+    ASSERT_EQ(1, (int)cJSON_GetObjectItem(total, "truncated")->valueint);
+    ASSERT((int)cJSON_GetObjectItem(total, "bytes")->valueint
+        > (int)cJSON_GetObjectItem(total, "bytes_packed")->valueint);
+    cJSON_Delete(j);
+    free(b);
+
+    /* the human-readable table must not need the JSON to be understood */
+    snprintf(args, sizeof(args), "count .");
+    ASSERT_EQ(0, run_in(dir, args, out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "read cap") != NULL);
+    ASSERT(strstr(b, "some files truncated") != NULL);
+    free(b);
+
+    /* and the manifest of an actual bundle must carry it too */
+    char *md = scratch("e2e_trunc.md");
+    snprintf(args, sizeof(args), "pack . --no-tree -o \"%s\"", md);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(md, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "truncated=1 bytes_packed=") != NULL);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out); free(err); free(nul); free(dir); free(md);
+    PASS();
+}
+
+/* --max-file-tokens must hold even when the read cap also fires, and the
+ * marker it appends must be charged against the cap rather than added to it. */
+TEST e2e_token_cap_holds_over_read_cap(void)
+{
+    char *dir = scratch("tokcap");
+    char *out = scratch("e2e_tokcap.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char big[1024];
+    snprintf(big, sizeof(big), "%s/big.c", dir);
+    FILE *bf = fopen(big, "wb");
+    ASSERT(bf != NULL);
+    for (size_t i = 0; i < (size_t)READ_CAP_DEFAULT + 4096; i++)
+        fputc('a' + (int)(i % 26), bf);
+    fclose(bf);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init", dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+    snprintf(args, sizeof(args), "count . --max-file-tokens 400 --format json");
+    ASSERT_EQ(0, run_in(dir, args, out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON *f0 = cJSON_GetArrayItem(cJSON_GetObjectItem(j, "files"), 0);
+    ASSERT(f0 != NULL);
+    /* the binding constraint is the token cap, and it is what gets reported */
+    ASSERT_STR_EQ("token-cap",
+        cJSON_GetObjectItem(f0, "truncation")->valuestring);
+    ASSERT((int)cJSON_GetObjectItem(f0, "tokens")->valueint <= 400);
+    /* a token cap drops no bytes, so bytes_packed would just repeat bytes */
+    ASSERT(cJSON_GetObjectItem(f0, "bytes_packed") == NULL);
+    cJSON_Delete(j);
+    free(b);
+
+    test_rm_rf(dir);
+    free(out); free(err); free(nul); free(dir);
+    PASS();
+}
+
 TEST e2e_redact_rejected_with_tree(void)
 {
     char *dir = scratch("redtree");
@@ -1509,6 +1663,8 @@ RUN_TEST(e2e_manifest_does_not_break_budget);
 RUN_TEST(e2e_redact_is_opt_in);
 RUN_TEST(e2e_redact_is_deterministic);
 RUN_TEST(e2e_redact_rejected_with_tree);
+    RUN_TEST(e2e_count_reports_truncation);
+    RUN_TEST(e2e_token_cap_holds_over_read_cap);
     RUN_TEST(e2e_outline_modes_and_budget);
     RUN_TEST(e2e_count_outline_agrees_with_pack);
 RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);

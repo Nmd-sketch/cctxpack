@@ -73,6 +73,8 @@ static int cmd_count_json(const pack_opts *o, const strlist *paths)
     }
     cJSON_AddItemToObject(root, "files", files);
     unsigned long long tb = 0, tl = 0, tt = 0;
+    size_t tp = 0;
+    int ntrunc = 0, nread = 0;
     int rc = 0;
     for (size_t i = 0; i < paths->n; i++) {
         char full[4096];
@@ -98,8 +100,27 @@ static int cmd_count_json(const pack_opts *o, const strlist *paths)
             cJSON_AddItemToObject(f, "binary", cJSON_CreateTrue());
         cJSON_AddItemToObject(f, "lines", cJSON_CreateNumber((double)lines));
         cJSON_AddItemToObject(f, "tokens", cJSON_CreateNumber((double)tokens));
+        /* `bytes` above is measured on disk; `lines` and `tokens` are measured
+         * on what was actually read.  Those only describe the same bytes when
+         * nothing was dropped, so the gap is stated rather than implied. */
+        if (rf.truncated) {
+            cJSON_AddItemToObject(f, "truncated", cJSON_CreateTrue());
+            cJSON_AddItemToObject(f, "truncation",
+                cJSON_CreateString(trunc_reason_name(rf.trunc_reason)));
+            ntrunc++;
+            if (rf.trunc_reason == TRUNC_READ_CAP) {
+                nread++;
+                /* Only the read cap drops bytes.  Under a token cap every byte
+                 * was read and only tokens were cut, so `packed` would just
+                 * repeat `bytes` - and the totals only report it when the two
+                 * genuinely differ. */
+                cJSON_AddItemToObject(f, "bytes_packed",
+                    cJSON_CreateNumber((double)rf.packed));
+            }
+        }
         cJSON_AddItemToArray(files, f);
         tb += rf.file_size;
+        tp += rf.packed;
         tl += lines;
         tt += tokens;
         read_file_free(&rf);
@@ -110,6 +131,15 @@ static int cmd_count_json(const pack_opts *o, const strlist *paths)
         cJSON_AddItemToObject(total, "files",
             cJSON_CreateNumber((double)paths->n));
         cJSON_AddItemToObject(total, "bytes", cJSON_CreateNumber((double)tb));
+        if (ntrunc) {
+            cJSON_AddItemToObject(total, "truncated",
+                cJSON_CreateNumber((double)ntrunc));
+            /* Reported only when bytes were actually dropped; a token cap
+             * leaves every byte read, so packed would equal bytes. */
+            if (nread)
+                cJSON_AddItemToObject(total, "bytes_packed",
+                    cJSON_CreateNumber((double)tp));
+        }
         cJSON_AddItemToObject(total, "lines", cJSON_CreateNumber((double)tl));
         cJSON_AddItemToObject(total, "tokens", cJSON_CreateNumber((double)tt));
         char *out = cJSON_PrintUnformatted(root);
@@ -126,8 +156,10 @@ static int cmd_count_json(const pack_opts *o, const strlist *paths)
 
 static int cmd_count_table(const pack_opts *o, const strlist *paths)
 {
-    printf("%9s %9s %9s  %s\n", "bytes", "lines", "tokens", "path");
+    printf("%9s %9s %9s  %-40s  %s\n", "bytes", "lines", "tokens", "path",
+        "note");
     unsigned long long tb = 0, tl = 0, tt = 0;
+    int ntrunc = 0;
     for (size_t i = 0; i < paths->n; i++) {
         char full[4096];
         join_path(full, sizeof(full), o->root, paths->v[i]);
@@ -143,14 +175,30 @@ static int cmd_count_table(const pack_opts *o, const strlist *paths)
         else
             memset(&ol, 0, sizeof(ol));
         outline_free(&ol);
-        printf("%9llu %9zu %9zu  %s\n", (unsigned long long)rf.file_size, lines,
-            tokens, paths->v[i]);
+        /* A truncated row must say so on the same line: `bytes` is on disk but
+         * the line and token counts come from only part of the file, so a
+         * reader who skips the note sizes their budget wrong. */
+        char note[72];
+        if (rf.trunc_reason == TRUNC_READ_CAP)
+            snprintf(note, sizeof(note), "read cap: %zu of %llu bytes",
+                rf.packed, (unsigned long long)rf.file_size);
+        else if (rf.trunc_reason == TRUNC_TOKEN_CAP)
+            snprintf(note, sizeof(note), "token cap: %llu est. tokens",
+                (unsigned long long)o->max_file_tokens);
+        else
+            note[0] = '\0';
+        printf("%9llu %9zu %9zu  %-40s  %s\n",
+            (unsigned long long)rf.file_size, lines, tokens,
+            paths->v[i], note);
+        if (rf.truncated)
+            ntrunc++;
         tb += rf.file_size;
         tl += lines;
         tt += tokens;
         read_file_free(&rf);
     }
-    printf("%9llu %9llu %9llu  %s\n", tb, tl, tt, "total");
+    printf("%9llu %9llu %9llu  %-40s  %s\n", tb, tl, tt, "total",
+        ntrunc ? "some files truncated" : "");
     return 0;
 }
 
