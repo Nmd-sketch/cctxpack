@@ -46,20 +46,22 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 | Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
 |---|---|---|---|---|---|
 | `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 43 | e2e smoke |
-| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 500 | 373 | 440 | `test_cli.c` |
-| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 220 | – | 173 | `test_cli.c` |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 449 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies | 240 | – | 207 | `test_cli.c` |
 | `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge | 340 | – | 269 | `test_config.c` |
 | `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 583 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 148 | `test_files.c` |
 | `src/read.c` | open/read, binary sniff, size caps, truncation | 175 | 149 | 141 | `test_read.c` |
 | `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 128 | `test_tokens.c` |
-| `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | – | 58 | `test_pack.c` |
-| `src/redact.c` | opt-in credential redaction (M9): vendor shapes, assignments, PEM blocks | 300 | – | 266 | `test_redact.c` |
-| `src/pack.c` | ordering (`key`/`key2`/`path`), sink, budget fit, report assembly, `--patch` bundle, manifest, redaction wiring | 520 | 239 | 512 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest rendering | 450 | 170 | 407 | `test_format.c` |
+| `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | - | 58 | `test_pack.c` |
+| `src/fit.c` | budget fitting, extracted from `pack.c` (M10) | 60 | - | 22 | `test_pack.c` |
+| `src/outline.c` | declaration-outline scanner + refusal fallback (M10) | 620 | - | 534 | `test_outline.c` |
+| `src/redact.c` | opt-in credential redaction (M9): vendor shapes, assignments, PEM blocks | 300 | - | 266 | `test_redact.c` |
+| `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 566 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 479 | `test_format.c` |
 | `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 242 | 301 | `test_util.c` |
 | **total (`.c`)** | | | 1,710 | **3,495** | |
-| **total (`.c`+`.h`)** | | **≤ 4,000 (NFR-09)** | 1,857 | **3,752** | |
+| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,535** | |
 
 **Current measurement (2026-10-17, after M9).** 3,752 lines against the 4,000
 ceiling. `src/tokens.c` grew from 30 to 128 lines to carry the per-class
@@ -75,6 +77,29 @@ v1 scope and then landed for an agent-driven audience: the manifest is what lets
 a consumer identify what it received, and redaction removes an organisational
 blocker for anyone sending a repo to a hosted model. The 300 lines are a
 credential matcher, not speculative infrastructure.
+
+**M10 review outcome (owner decision, 2026-10-18).** Outline mode adds **808**
+lines (two new modules, plus rendering and wiring) and lands at **4,560**, so
+NFR-09 is raised **4,000 → 5,200** on the same rule. Four module caps move with
+it: `pack.c` **520 → 650** (566 measured), `format.c` **450 → 550** (479),
+`cli.c` **500 → 520** (449), and a new `src/outline.c` cap of **620** (559
+measured). The justification is the same shape as M9's: outline mode is the
+feature that makes a repository-sized input usable in a 128 K window, which is
+the agent-driven use case the whole tool exists for.
+
+Two extractions paid part of the way. `src/fit.c` took `pack_fit()` out of
+`pack.c` (512 → 482 at the time, freeing the headroom the feature needed), and
+`src/outline.c` is new rather than grown. Neither was a refactor for its own
+sake — `fit.c` existed because `pack.c` had 8 free lines.
+
+**The LOC numbers are the interesting part of M10.** A pre-implementation guess
+of 10× outline reduction on this repository's own source turned out to be
+**10.8×** on `src/` — but only **3.9×** across the whole repository and **2.5×**
+on an unrelated C++ codebase. The gap is prose: Markdown is refused by design, so
+a documentation-heavy corpus sees almost nothing. Had the claim been published as
+a single "10×" figure it would have been roughly right for code and badly wrong
+for most real inputs, which is why the measurement — not the estimate — is what
+the README carries.
 
 **M8 review outcome (owner decision, 2026-10-17).** The provenance manifest adds
 158 lines and pushed `pack.c` from 451 to 502 against a 460 cap. The M7 review
@@ -574,6 +599,39 @@ Resolved 2026-10-17 (M9 opt-in credential redaction, agent-driven audience):
   formats produced `"digest":"…",redactions=2}` and an unquoted XML attribute,
   i.e. unparseable output in two of four formats. Omitted entirely when zero, so
   an unscrubbed bundle carries no field claiming it might have been scrubbed.
+- **D-22 declarations are recognised at the moment a `{` opens, not at the end
+  of the line.** `int f(void) { ... }` written on one line never has depth > 0
+  when the line ends, so an end-of-line rule misses it entirely; and a signature
+  split across two lines has its `{` on a line containing nothing but the
+  brace, which is why the scanner also falls back to the previous line. Getting
+  this wrong made every single-line function invisible — the most common shape
+  there is.
+- **D-23 the scanner refuses rather than guesses.** Unbalanced braces (the scan
+  lost sync), an extension outside the claimed set, or a substantial file that
+  yields nothing recognisable all return `-1`, and the caller emits the **full
+  text**. A confident wrong outline is worse than no outline: to the consumer it
+  is indistinguishable from a correct one. Measured refusal rate on an unrelated
+  C++ codebase: 16 of 99 files, of which 15 are Markdown and one is a C++ test
+  file.
+- **D-24 brace-less files get their own pass.** A header of prototypes has no
+  braces at all, which the depth rule would reject — but prototypes *are* the
+  declarations worth listing, and headers are a large share of a repository's
+  file count. `prototype_outline()` collects includes and `;`-terminated
+  signatures. This took the repo's own refusal count from 2/29 to 0/29.
+- **D-25 progressive disclosure is a single pass, not two.** The first design
+  spent the budget on whole files, then spent whatever was left on outlines. It
+  was useless: the first pass always consumed the entire budget, so
+  `--outline --budget N` produced the same output as `--budget N`. Deciding per
+  file — whole body if it fits, else outline, else dropped — is what makes the
+  repository stay representable while the most relevant files still arrive
+  complete. Measured at `--budget 6000` on `src/`: 2 files whole, 10 outlined,
+  5,966/6,000 tokens.
+- **D-26 JSON outlines are structured, not text.**
+  `"outline":[{"line":12,"decl":"..."}]` rather than a pre-rendered blob,
+  because JSON is the machine path and a consumer can select from an array but
+  not from prose. `count --outline` routes through the same helper `pack` uses
+  (`count_of`), so the two commands cannot silently disagree — the same reason
+  `--redact` is rejected where it would be a no-op.
 
 Resolved 2026-10-16 (M2 code review):
 - **Estimator constants α = 3.5, β = 3.8**, evaluated as `ceil((10C+35L)/38)` in

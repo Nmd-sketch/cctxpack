@@ -146,6 +146,30 @@ inbound opportunities (recruiters/companies referencing the profile).
     non-zero) and on stderr, so a consumer can tell a scrubbed file from an
     empty one;
   - rejected with `tree`, which never reads content and would silently no-op.
+- **FR-025** (M) `--outline` — send a file's **declarations** (imports and
+  signatures, with line numbers) instead of its body. Two modes, and the
+  existing `--budget` selects between them, so no second flag is needed:
+  - `--outline` with no budget → every parseable file as declarations;
+  - `--outline --budget N` → **progressive**: one pass in relevance order where
+    a file takes its whole body if it fits, otherwise its outline if it fits,
+    otherwise it is dropped and reported.
+
+  Guarantees:
+  - **the budget is still a hard cap**; progressive disclosure reallocates
+    within it rather than exceeding it;
+  - the scanner **refuses** rather than guesses: unbalanced braces, an
+    unknown extension, or a substantial file yielding nothing recognisable all
+    produce `-1`, and the caller emits the **full text** instead. A confident
+    wrong outline is worse than no outline;
+  - JSON carries a **structured** `outline` array of `{line, decl}`, because
+    that is the machine path and a consumer can select from an array but not
+    from prose;
+  - `count --outline` reports what would actually be sent, through the same
+    helper `pack` uses, so the two cannot disagree;
+  - measured: **10.8× smaller** on this repository's `src/` (29 files,
+    44,078 → 4,091 tokens), 3.9× across the whole repository (which blends in
+    Markdown), 2.5× on an unrelated C++ codebase. Prose is refused by
+    design, so a documentation-heavy corpus sees ~no saving.
 
 ### Exit codes
 | Code | Meaning |
@@ -191,22 +215,23 @@ inbound opportunities (recruiters/companies referencing the profile).
   user paths in spawned commands; pathological inputs (huge files, symlink loops,
   hostile names) terminate with a clean error, not a hang or crash.
 - **NFR-09 Code budget** — own source (`src/*.c` + `src/*.h` physical lines,
-  vendor and tests excluded) ≤ 4,000 LOC. Exceeding a module budget (design §2.2)
+  vendor and tests excluded) ≤ 5,200 LOC. Exceeding a module budget (design §2.2)
   triggers a design review, not more code. (Raised 1,800 → 2,000 at the M2 review,
-  2,000 → 3,500 at the M3 review, and 3,500 → 4,000 at the M9 review: M9 measures
-  3,712 with two features landed that the v1 scope had deferred — the provenance
-  manifest and opt-in credential redaction. Each review applied this document's
-  own "measured value + ~15 % headroom" rule rather than trimming working, tested
-  code to fit a pre-implementation estimate. See design §2.2/§12.)
-- **NFR-13 Safe-to-send** — a bundle may only be altered from the bytes on disk
-  when the user asked for it. `--redact` is therefore opt-in (FR-024) and is the
-  only feature that rewrites content; `--max-file-tokens` truncation is reported
-  explicitly. Fidelity is the product's core promise and must never be broken by
-  default.
+  2,000 → 3,500 at the M3 review, 3,500 → 4,000 at the M9 review, and
+  4,000 → 5,200 at the M10 review: M10 measures 4,560, having added outline mode.
+  Across M9 and M10 the work deferred from the v1 scope landed — the provenance
+  manifest, opt-in credential redaction, and outline mode. Each review applied this
+  document's own "measured value + ~15 % headroom" rule rather than trimming
+  working, tested code to fit a pre-implementation estimate. See design §2.2/§12.)
 - **NFR-10 Documentation** — every flag and command appears in both `--help` and the
   README; requirements changes update this document in the same commit.
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0
   with `LICENSE` + provenance recorded in `vendor/`.
+- **NFR-13 Safe-to-send** — a bundle may only be altered from the bytes on disk
+  when the user asked for it. `--redact` is therefore opt-in (FR-024), and
+  `--outline` likewise replaces bodies with declarations rather than silently
+  summarising them. `--max-file-tokens` truncation is reported explicitly.
+  Fidelity is the product's core promise and must never be broken by default.
 
 ## 5. Interfaces
 

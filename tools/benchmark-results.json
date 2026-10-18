@@ -2,6 +2,30 @@
   "encoding": "cl100k_base",
   "corpora": [
     {
+      "name": "cctxpack",
+      "path": "C:/New projects/C projects/cctxpack",
+      "files_measured": 76,
+      "binary_skipped": 1,
+      "aggregate_pct": 10.5,
+      "median_pct": 8.02,
+      "p90_pct": 35.66,
+      "p10_pct": -5.78,
+      "worst_pct": -26.84,
+      "under_rate_pct": 22.4,
+      "summed_error_pct": 10.497,
+      "est_total": 174365,
+      "real_total": 157800,
+      "worst_file": "tools/benchmark-results.md",
+      "worst_file_pct": -26.84,
+      "by_class": {
+        "ascii": {
+          "n": 76,
+          "median": 8.02,
+          "worst": -26.84
+        }
+      }
+    },
+    {
       "name": "sniff",
       "path": "C:/Old projects/sniff",
       "files_measured": 99,
@@ -22,30 +46,6 @@
           "n": 99,
           "median": 32.21,
           "worst": -2.45
-        }
-      }
-    },
-    {
-      "name": "cctxpack",
-      "path": "C:/New projects/C projects/cctxpack",
-      "files_measured": 64,
-      "binary_skipped": 1,
-      "aggregate_pct": 10.4,
-      "median_pct": 5.59,
-      "p90_pct": 36.77,
-      "p10_pct": -5.45,
-      "worst_pct": -26.11,
-      "under_rate_pct": 26.6,
-      "summed_error_pct": 10.402,
-      "est_total": 136506,
-      "real_total": 123644,
-      "worst_file": "src/tokens.c",
-      "worst_file_pct": -26.11,
-      "by_class": {
-        "ascii": {
-          "n": 64,
-          "median": 5.59,
-          "worst": -26.11
         }
       }
     },
@@ -78,5 +78,31 @@
         }
       }
     }
-  ]
+  ],
+  "outline": {
+    "cctxpack": {
+      "files": 77,
+      "full_tokens": 174365,
+      "outline_tokens": 44633,
+      "ratio": 3.9,
+      "pct_smaller": 74.4,
+      "reduced": 56
+    },
+    "sniff": {
+      "files": 99,
+      "full_tokens": 83245,
+      "outline_tokens": 33357,
+      "ratio": 2.5,
+      "pct_smaller": 59.9,
+      "reduced": 83
+    },
+    ".agency-agents": {
+      "files": 336,
+      "full_tokens": 1222617,
+      "outline_tokens": 1216300,
+      "ratio": 1.0,
+      "pct_smaller": 0.5,
+      "reduced": 2
+    }
+  }
 }

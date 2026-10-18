@@ -1246,6 +1246,167 @@ TEST e2e_redact_is_deterministic(void)
 }
 
 /* tree never reads content, so accepting the flag would silently do nothing. */
+/* --outline with no budget means "everything as declarations", and
+ * --outline --budget means progressive: whole files first, outlines for the
+ * rest.  Both must stay inside the budget. */
+TEST e2e_outline_modes_and_budget(void)
+{
+    char *dir = scratch("outline");
+    char *o1 = scratch("e2e_ol_all.md");
+    char *o2 = scratch("e2e_ol_prog.md");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && o1 && o2 && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+
+    /* six small modules, each with a body big enough to matter */
+    for (int i = 0; i < 6; i++) {
+        char fp[1024], body[900];
+        snprintf(fp, sizeof(fp), "%s/m%02d.c", dir, i);
+        size_t n = (size_t)snprintf(body, sizeof(body),
+            "#include <stdio.h>\n\nint m%02d_a(int x){\n", i);
+        for (int k = 0; k < 12; k++)
+            n += (size_t)snprintf(body + n, sizeof(body) - n,
+                "  int v%02d_%02d = %d * %d;\n", i, k, i, k);
+        n += (size_t)snprintf(body + n, sizeof(body) - n,
+            "  return x;\n}\n\nstatic int m%02d_b(void)\n{\n  return 1;\n}\n", i);
+        ASSERT(test_write_file(fp, body, n) == 0);
+    }
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    char args[1024];
+
+    /* full text, for the comparison */
+    char *full = NULL;
+    size_t full_len = 0;
+    snprintf(args, sizeof(args), "count . --format json");
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+
+    /* 1. no budget => everything as declarations */
+    snprintf(args, sizeof(args), "pack . --outline --no-tree -o \"%s\"", o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *b = test_read_all(o1, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "decls, outline)") != NULL);
+    ASSERT(strstr(b, "#include <stdio.h>") != NULL);
+    /* a body from the source must NOT be present */
+    ASSERT(strstr(b, "return x;") == NULL);
+    free(b);
+
+    /* 2. with a budget it must stay inside it, and mix both forms */
+    snprintf(args, sizeof(args),
+        "pack . --outline --budget 600 --report --no-tree -o \"%s\"", o2);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(o2, NULL);
+    ASSERT(b != NULL);
+    char *e = test_read_all(err, NULL);
+    ASSERT(e != NULL);
+    const char *t = strstr(e, "est. tokens ");
+    ASSERT(t != NULL);
+    unsigned long used = 0, cap = 0;
+    ASSERT(sscanf(t, "est. tokens %lu/%lu (budget)", &used, &cap) == 2);
+    ASSERT(used <= 600);
+    free(e);
+    /* every included file is either a whole body or an outline, never neither */
+    ASSERT(strstr(b, "### m00.c") != NULL);
+    free(b);
+
+    /* 3. JSON stays machine-valid and carries a structured outline */
+    snprintf(args, sizeof(args), "pack . --outline --format json -o \"%s\"",
+        o1);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    b = test_read_all(o1, NULL);
+    ASSERT(b != NULL);
+    cJSON *j = cJSON_Parse(b);
+    ASSERT(j != NULL);
+    cJSON *files = cJSON_GetObjectItem(j, "files");
+    ASSERT(files != NULL);
+    cJSON *f0 = cJSON_GetArrayItem(files, 0);
+    ASSERT(f0 != NULL);
+    cJSON *arr = cJSON_GetObjectItem(f0, "outline");
+    ASSERT(arr != NULL);          /* structured, not a text blob */
+    ASSERT(cJSON_IsArray(arr));
+    cJSON *it0 = cJSON_GetArrayItem(arr, 0);
+    ASSERT(it0 != NULL);
+    ASSERT(cJSON_GetObjectItem(it0, "line") != NULL);
+    ASSERT(cJSON_GetObjectItem(it0, "decl") != NULL);
+    cJSON_Delete(j);
+    free(b);
+    (void)full;
+    (void)full_len;
+
+    test_rm_rf(dir);
+    free(o1); free(o2); free(err); free(nul); free(dir);
+    PASS();
+}
+
+/* count and pack must agree: a flag that silently does nothing in count would
+ * make every size question wrong. */
+TEST e2e_count_outline_agrees_with_pack(void)
+{
+    char *dir = scratch("olcount");
+    char *out = scratch("e2e_olcount.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(dir && out && err && nul);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/a.c", dir);
+    const char *src = "#include <stdio.h>\n\n"
+        "int big(int x){\n  int a = 1;\n  int b = 2;\n  return x + a + b;\n}\n";
+    ASSERT(test_write_file(fp, src, strlen(src)) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e add -A", dir);
+    ASSERT(test_system(cmd) == 0);
+    snprintf(cmd, sizeof(cmd),
+        "git -C \"%s\" -c user.name=t -c user.email=t@e commit -q -m init",
+        dir);
+    ASSERT(test_system(cmd) == 0);
+
+    long full = 0, ol = 0;
+    snprintf(cmd, sizeof(cmd), "count . --format json");
+    ASSERT_EQ(0, run_in(dir, cmd, out, err));
+    char *b = test_read_all(out, NULL);
+    cJSON *j = cJSON_Parse(b);
+    full = (long)cJSON_GetObjectItem(
+        cJSON_GetObjectItem(j, "total"), "tokens")->valueint;
+    cJSON_Delete(j);
+    free(b);
+
+    snprintf(cmd, sizeof(cmd), "count . --outline --format json");
+    ASSERT_EQ(0, run_in(dir, cmd, out, err));
+    b = test_read_all(out, NULL);
+    j = cJSON_Parse(b);
+    ol = (long)cJSON_GetObjectItem(
+        cJSON_GetObjectItem(j, "total"), "tokens")->valueint;
+    cJSON_Delete(j);
+    free(b);
+
+    ASSERT(ol > 0);
+    ASSERT(ol < full);           /* the flag actually did something */
+
+    test_rm_rf(dir);
+    free(out); free(err); free(nul); free(dir);
+    PASS();
+}
+
 TEST e2e_redact_rejected_with_tree(void)
 {
     char *dir = scratch("redtree");
@@ -1348,6 +1509,8 @@ RUN_TEST(e2e_manifest_does_not_break_budget);
 RUN_TEST(e2e_redact_is_opt_in);
 RUN_TEST(e2e_redact_is_deterministic);
 RUN_TEST(e2e_redact_rejected_with_tree);
+    RUN_TEST(e2e_outline_modes_and_budget);
+    RUN_TEST(e2e_count_outline_agrees_with_pack);
 RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);
     RUN_TEST(e2e_diff_outside_worktree);
     test_rm_rf("ctx_e2e_tmp");

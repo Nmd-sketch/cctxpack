@@ -161,6 +161,88 @@ committed credentials; it does not replace a secret scanner, and it will miss
 credentials in shapes it does not know. See the man page's REDACTION section for
 the full list.
 
+### Sending declarations instead of whole files
+
+`--outline` sends each file's **imports and signatures, with line numbers**,
+instead of its body — enough to know what a repository contains without paying
+for how it is implemented.
+
+```sh
+cctxpack src --outline --format md
+```
+
+```markdown
+### pack.c  (24 decls, outline)
+```c
+     1: #include "pack.h"
+     3: #include "format.h"
+     4: #include "fit.h"
+     ...
+   239: static int load_content(const pack_opts *o, char *full, ...)
+   ...
+```
+
+Combined with `--budget`, it becomes **progressive disclosure** — the most
+relevant files arrive whole, the rest arrive as signatures, and everything stays
+inside the budget:
+
+```sh
+cctxpack src --outline --budget 8000 --report -o ctx.md
+```
+
+```
+  ### cli.c                  whole      2,146 est.
+  ### cli.h                  whole
+  ### cmd.c                  whole
+  ### cmd.h                  whole
+  ### config.c  (18 decls, outline)
+  ### files.c   (37 decls, outline)
+  ...
+  cctxpack: est. tokens 7980/8000 (budget)
+```
+
+At the same budget, `cctxpack src --budget 8000` fits **9** files, all whole.
+With `--outline` it fits **12** — 6 whole and 6 as signatures. That is the actual
+trade, stated plainly: the same budget covers more of the repository, and fewer
+of the files arrive complete.
+
+On this repository's `src/` that turns 44,078 tokens into 4,091 — **10.8×
+smaller**. Measured across corpora:
+
+| Corpus | Files | Full text | Outline | Smaller by |
+|---|---:|---:|---:|---:|
+| `cctxpack/src/` (C) | 29 | 44,078 | 4,091 | 91% |
+| `cctxpack/tests/` (C) | 20 | 35,931 | 3,572 | 90% |
+| `cctxpack/vendor/` (C) | 14 | 53,637 | 5,241 | 90% |
+| `sniff/` (C++) | 99 | 83,245 | 33,357 | 60% |
+| `cctxpack/` (whole repo) | 77 | 174,365 | 44,633 | 74% |
+| `.agency-agents/` (Markdown) | 336 | 1,222,617 | 1,216,300 | 1% |
+
+The last row is the honest one, and it is why the table exists. **Outline mode
+only helps code.** Markdown is refused by design — cctxpack will not invent
+structure it cannot see — so a documentation-heavy corpus sees almost nothing,
+and the whole-repo figure (74%) is a blend of the 90%-saving code and the
+1%-saving prose.
+
+**It refuses rather than guesses.** Any file the scanner cannot account for —
+unbalanced braces, an extension outside the supported set, a substantial file
+yielding nothing recognisable — is sent **whole**, not outlined. A wrong outline
+is worse than none, because a consumer cannot tell them apart. On an unrelated
+C++ codebase, 16 of 99 files refused, and 15 of those were Markdown.
+
+With `--format json` the outline is a **structured array**, not rendered text:
+
+```json
+{"path": "src/pack.c", "tokens": 1043, "outline": [
+  {"line": 1, "decl": "#include \"pack.h\""},
+  {"line": 31, "decl": "static int cmp_item(const void *a, const void *b)"}
+]}
+```
+
+A consumer can select from an array; it cannot select from prose. And
+`cctxpack count --outline` reports what would actually be sent, through the same
+code path `pack` uses, so the two cannot silently disagree.
+
 ### Machine-readable formats
 
 ```sh

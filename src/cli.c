@@ -30,6 +30,7 @@ enum {
     OPT_STAGED,
     OPT_PATCH,
     OPT_REDACT,
+    OPT_OUTLINE,
     OPT_HELP,
     OPT_VERSION
 };
@@ -49,6 +50,7 @@ static const struct option longopts[] = {
     { "staged", no_argument, NULL, OPT_STAGED },
     { "patch", no_argument, NULL, OPT_PATCH },
     { "redact", no_argument, NULL, OPT_REDACT },
+    { "outline", no_argument, NULL, OPT_OUTLINE },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -80,6 +82,9 @@ void cli_help(void)
            "  --patch               diff: emit the unified diff instead of whole files\n"
            "  --redact              replace credential-shaped text with\n"
            "                        [REDACTED:kind] markers (opt-in; see NOTES)\n"
+           "  --outline             send declarations instead of whole files;\n"
+           "                        with --budget, whole files first and\n"
+           "                        outlines for whatever does not fit\n"
            "\n"
            "  diff reports staged, unstaged and untracked changes by default;\n"
            "  deleted files are never included.\n"
@@ -292,6 +297,7 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     o->staged = 0;
     o->patch = 0;
     o->redact = 0;
+    o->outline = 0;
     o->query = NULL;
     o->output = NULL;
     o->fake_ls = NULL;
@@ -399,6 +405,9 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
             break;
         case OPT_REDACT:
             o->redact = 1;
+            break;
+        case OPT_OUTLINE:
+            o->outline = 1;
             break;
         case OPT_HELP:
             cli_help();

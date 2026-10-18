@@ -55,9 +55,9 @@ def find_binary(explicit):
     sys.exit("cctxpack binary not found; pass --bin")
 
 
-def run_count(binary, repo):
+def run_count(binary, repo, extra=()):
     """Per-file estimates, straight from the binary."""
-    out = subprocess.run([binary, "count", repo, "--format", "json"],
+    out = subprocess.run([binary, "count", repo, "--format", "json"] + list(extra),
                          capture_output=True)
     if out.returncode != 0:
         sys.exit("cctxpack count failed on %s: %s"
@@ -182,6 +182,31 @@ def main():
 
     if not report["corpora"]:
         sys.exit("no measurable files found")
+
+    # Outline mode (FR-025): what --outline buys, measured with the same real
+    # binary.  Reported separately because it applies only to CODE - prose is
+    # refused by design, so a documentation-heavy corpus shows no saving at all.
+    print("\n--outline (declarations instead of whole files):")
+    outlines = {}
+    for repo in args.repos:
+        name = os.path.basename(repo.rstrip("/\\"))
+        full = run_count(binary, repo)
+        outl = {f["path"]: f["tokens"]
+                for f in run_count(binary, repo, ["--outline"])}
+        ft = sum(f.get("tokens", 0) for f in full)
+        ot = sum(outl.get(f["path"], 0) for f in full)
+        red = sum(1 for f in full
+                  if f.get("tokens", 0) > outl.get(f["path"], 0))
+        ratio = (ft / ot) if ot else 0.0
+        pct = (100.0 * (1 - ot / ft)) if ft else 0.0
+        print("  %-16s %4d files  %8d -> %8d tokens  %5.1fx  (%.0f%% smaller,"
+              " %d/%d reduced)" % (name, len(full), ft, ot, ratio, pct,
+                                  red, len(full)))
+        outlines[name] = {"files": len(full), "full_tokens": ft,
+                          "outline_tokens": ot, "ratio": round(ratio, 1),
+                          "pct_smaller": round(pct, 1), "reduced": red}
+    report["outline"] = outlines
+
 
     with open(os.path.join(HERE, "benchmark-results.json"), "w",
               encoding="utf-8") as fh:
