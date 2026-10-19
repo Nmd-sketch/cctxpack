@@ -113,6 +113,21 @@ Force the fitting report.
 .B \-\-config
 Print the resolved configuration and exit.
 .TP
+.BI \-\-find " PATTERN"
+Fixed-string, line-oriented search. Prints
+.I path:line: text
+for every matching line and exits instead of packing. Honours path arguments,
+.B \-\-include
+and
+.BR \-\-exclude ,
+and skips binary files. Case-sensitive
+.B grep \-F
+semantics: no regular expressions. With
+.BR \-\-report ,
+the count of matches and files is summarised on stderr.
+.B \-o
+writes the matches to a file rather than stdout. Exits 4 if nothing matched.
+.TP
 .B \-h, \-\-help
 Show usage.
 .TP
@@ -134,7 +149,9 @@ is also given:
 .B \-\-outline
 alone
 .PP
-Every parseable file is sent as declarations. Nothing is sent whole.
+Every parseable file is sent as declarations. Files the scanner refuses, and
+binaries, are sent whole rather than dropped, so nothing that a plain pack
+would have included goes missing.
 .IP \(bu 2
 .BI "\-\-outline " "\-\-budget " N
 .PP
@@ -338,6 +355,10 @@ outside a work tree.
 .TP
 .B 3
 Nothing fits the budget.
+.TP
+.B 4
+.B \-\-find
+found no match. The search itself succeeded; only the result set was empty.
 .SH EXAMPLES
 .PP
 Pack the current repository:

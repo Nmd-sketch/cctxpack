@@ -39,33 +39,80 @@ Each stage is a pure function over a growing context struct where practical
 ### 2.2 Modules & LOC budgets (own code; vendor/tests excluded)
 
 LOC = physical lines (`wc -l`), blanks and comments included. The cap is the
-review threshold (P1). The **M2** column records the measurement at the M2 code
-review (2026-10-16); the **M3** column is the measurement at the M3 review
-(2026-10-16, post `8317a60`). Caps were set to measured value + ~15% headroom.
+review threshold (P1). **M2** and **M3** are the measurements at those reviews
+(2026-10-16, at `6c5ff00` and `8317a60`), re-measured from git; **now** is the
+working tree. Caps were set to measured value + ~15% headroom.
 
-| Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
-|---|---|---|---|---|---|
-| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 47 | e2e smoke |
-| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 461 | `test_cli.c` |
-| `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | - | 257 | `test_cli.c` |
-| `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge, `--config` dump | 340 | – | 298 | `test_config.c` |
-| `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 583 | `test_files.c` |
-| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 148 | `test_files.c` |
-| `src/read.c` | open/read, binary sniff, read + token caps, truncation reasons (M11) | 215 | 149 | 186 | `test_read.c` |
-| `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 128 | `test_tokens.c` |
-| `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | - | 58 | `test_pack.c` |
-| `src/fit.c` | budget fitting, extracted from `pack.c` (M10) | 60 | - | 22 | `test_pack.c` |
-| `src/outline.c` | declaration-outline scanner + refusal fallback (M10) | 620 | - | 534 | `test_outline.c` |
-| `src/redact.c` | opt-in credential redaction (M9): vendor shapes, assignments, PEM blocks | 300 | - | 266 | `test_redact.c` |
-| `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 598 | `test_pack.c` |
-| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 512 | `test_format.c` |
-| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 242 | 301 | `test_util.c` |
-| **total (`.c`)** | | | 1,710 | **4,431** | |
-| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,789** | |
+| Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | LOC (now) | Unit tests |
+|---|---|---|---|---|---|---|
+| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 41 | 55 | e2e smoke |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 370 | 433 | 494 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | – | 182 | 265 | `test_cli.c` |
+| `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge, `--config` dump | 340 | – | 290 | 322 | `test_config.c` |
+| `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 448 | 612 | `test_files.c` |
+| `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 157 | 157 | `test_files.c` |
+| `src/read.c` | open/read, binary sniff, read + token caps, truncation reasons (M11) | 215 | 149 | 149 | 196 | `test_read.c` |
+| `src/tokens.c` | script-aware calibrated estimator | 180 | 30 | 30 | 142 | `test_tokens.c` |
+| `src/score.c` | lexical path scoring for `--query` (extracted from `pack.c`, M8) | 80 | – | – | 62 | `test_pack.c` |
+| `src/fit.c` | budget fitting, extracted from `pack.c` (M10) | 60 | – | – | 23 | `test_pack.c` |
+| `src/outline.c` | declaration-outline scanner + refusal fallback (M10) | 620 | – | – | 596 | `test_outline.c` |
+| `src/redact.c` | opt-in credential redaction (M9): vendor shapes, assignments, PEM blocks | 300 | – | – | 295 | `test_redact.c` |
+| `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 392 | 646 | `test_pack.c` |
+| `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 388 | 534 | `test_format.c` |
+| `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 181 | 311 | 322 | `test_util.c` |
+| `src/find.c` | fixed-string search, `path:line: text` output (M13) | 130 | – | – | 114 | `test_cli.c` |
+| **total (`.c`)** | | | 1,646 | 2,821 | 4,835 | |
+| **total (`.c`+`.h`)** | | **≤ 6,000 (NFR-09)** | **1,793** | **3,075** | **5,271** | |
 
-**Current measurement (2026-10-17, after M9).** 3,752 lines against the 4,000
-ceiling. `src/tokens.c` grew from 30 to 128 lines to carry the per-class
-classifier and rates.
+**Measurement correction (M13, 2026-10-19).** The table above is re-measured in
+`wc -l` from git at each milestone commit (`6c5ff00` for M2, `8317a60` for M3)
+and from the working tree for **now**. It replaces figures that had drifted from
+the stated definition in two separate ways, both found while adding `find.c`:
+
+- **the unit.** NFR-09 and §2.2 always said `wc -l`, but the numbers recorded
+  from M9 onward were *non-blank* line counts, which run ~7 % low. The M2 column
+  happened to be `wc -l` — correct — so the table was measuring in two units at
+  once and the totals silently disagreed with the definition.
+- **the milestone.** The **M3** column was accurate at the M3 sync (`670ff3a`
+  records `files.c` = 448, exactly `wc -l` at `8317a60`), but the M10 review
+  overwrote it with *current* non-blank values while keeping the "M3" label, so
+  from M10 onward it reported the present under a past heading. That the
+  *measurements* were always `wc -l` is settled by this document's own M3 review
+  outcome (§7.1 and §12), which records "M3 measures **3,075** lines" — the same
+  3,075 this table now reports. Only the table drifted. `src/util.c`'s M2 entry
+  (242) matches no milestone commit; it is 181 at `6c5ff00`.
+
+The consequence is what made this worth fixing rather than relabelling: under
+the authoritative definition the repository was already at **5,118 / 5,200
+(98.4 %)** when the doc claimed 4,789 (86 %), and M9 had in fact shipped at
+4,022 against a 4,000 ceiling. Every individual module cap still holds in
+`wc -l`, because module caps were re-derived against the same non-blank numbers
+that made the aggregate look comfortable.
+
+**M13 review outcome (owner decision, 2026-10-19).** The outline silent-drop
+hotfix plus `--find` add **153** lines (`find.c` 114, `find.h` 15, and the
+`pack.c` / `cli.c` / `main.c` / `pack.h` wiring), landing at **5,271** — a
+71-line overrun of the 5,200 ceiling, which NFR-09 says "triggers a design
+review, not more code". The review outcome is to **raise NFR-09 5,200 → 6,000**,
+applying the same "measured value + ~15 % headroom" rule (5,271 × 1.15 = 6,061,
+rounded down to a clean 6,000, matching how M3's 3,536 became 3,500).
+`src/find.c` gets a new cap of **130** (114 measured + ~14 %).
+
+The 153 lines were kept rather than trimmed because they are a defect fix with
+a regression test (§12 D-32) plus a new feature with four tests (§12 D-31) —
+not speculative code. Module caps are **not** raised: none is exceeded, though
+several are now tight in `wc -l` because they were set against non-blank
+figures — `pack.c` 646/650 (0.6 % spare), `redact.c` 295/300, `format.c`
+534/550, `outline.c` 596/620. That is recorded here so the next review can
+re-derive them on the corrected unit rather than inherit a hidden ~7 % skew;
+per the M7 precedent, a change in `pack.c` should still be paid for by removing
+something.
+
+**Historical measurement (2026-10-17, after M9).** 3,752 non-blank lines against
+the 4,000 ceiling — 4,022 `wc -l`, already 22 over. (The M9–M11.2 notes below
+record the non-blank counts each review measured at the time; the M13 correction
+above restates them in `wc -l`.) `src/tokens.c` grew from 30 to 128 lines to
+carry the per-class classifier and rates.
 
 **M9 review outcome (owner decision, 2026-10-17).** Opt-in credential redaction
 adds ~340 lines and lands at **3,752**, so NFR-09 is raised **3,500 → 4,000** on
@@ -733,6 +780,39 @@ Resolved 2026-10-17 (M9 opt-in credential redaction, agent-driven audience):
   because the `else if` in D-28's predecessor confined it to small files, so
   fixing the `else if` is what exposed the hang. The two bugs were the same
   line of code.
+
+- **D-31 `--find` reuses the pack selection model rather than inventing a
+  second one.** It calls the same `files_discover` → `root_filter` →
+  `glob_filter` chain as `pack`, `count` and `diff`, so path arguments,
+  `--include`, `--exclude`, `.gitignore` and `.cctxpackignore` all mean the
+  same thing in search as they do in packing. A search that agreed with the
+  bundler about *which files exist* would be a second source of truth drifting
+  from the first. Matching is fixed-string and case-sensitive (`grep -F`): the
+  alternatives were POSIX `<regex.h>` (absent on MSVC) or vendoring PCRE
+  (violates NFR-05's zero-dependency rule), and a search that behaves
+  identically on all three platforms beats one with backreferences that does
+  not. It is a flag rather than a fifth command because it shares no output
+  structure with `pack` — it is a query, like `--config`, that resolves the
+  config and exits (main dispatches it beside `show_config`, not through the
+  command table).
+
+- **D-32 a no-budget `--outline` pack must not lose files.** The old
+  no-budget branch included only files the outline scanner accepted
+  (`if (items[i].ol_ok && ...)`), so every refusal — Markdown, CMake, LICENSE,
+  binaries — was silently *excluded*, with exit 0, and the report explained it
+  as `(over budget)` even though no budget had been set (`est. tokens 55` with
+  no `/N` suffix is the tell). Measured on a 26-file C++ repo: **7 files and
+  5,673 tokens vanished**, including its README. That contradicts FR-025's
+  refusal contract ("the caller emits the full text instead") and made
+  `count --outline` and `pack --outline` disagree (1 file/3,030 tokens vs
+  0/0), which is the cross-command invariant FR-025 promises. The fix is to
+  include *every* file in that branch and only mark the parseable ones as
+  outlines; the report reason is now derived from `has_budget` instead of
+  being asserted. The existing test passed throughout because it exercised a
+  `.c` file that outlines successfully — the refusal path was never entered,
+  so a test named for the invariant checked only a within-command one.
+  Lesson recorded: a parity test must include a file the feature *cannot*
+  handle, or it tests nothing about the boundary.
 
 Resolved 2026-10-16 (M2 code review):
 - **Estimator constants α = 3.5, β = 3.8**, evaluated as `ceil((10C+35L)/38)` in

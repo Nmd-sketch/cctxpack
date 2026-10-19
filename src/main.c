@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "cmd.h"
 #include "config.h"
+#include "find.h"
 #include "pack.h"
 
 #include <stdio.h>
@@ -35,6 +36,10 @@ int main(int argc, char **argv)
         config_print(&o);
         return 0;
     }
+    /* --find is a search mode, like --config: it takes the resolved config
+     * and path arguments, then exits instead of packing. */
+    if (o.find)
+        return find_run(&o);
     /* Provenance for the bundle manifest.  Resolved once, from the work tree
      * rather than o->root, so it is correct for diff too (which re-points root
      * at the git top level).  NULL outside a work tree, which renders as

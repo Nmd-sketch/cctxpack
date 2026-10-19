@@ -32,6 +32,7 @@ enum {
     OPT_REDACT,
     OPT_OUTLINE,
     OPT_CONFIG,
+    OPT_FIND,
     OPT_HELP,
     OPT_VERSION
 };
@@ -53,6 +54,7 @@ static const struct option longopts[] = {
     { "redact", no_argument, NULL, OPT_REDACT },
     { "outline", no_argument, NULL, OPT_OUTLINE },
     { "config", no_argument, NULL, OPT_CONFIG },
+    { "find", required_argument, NULL, OPT_FIND },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -88,6 +90,8 @@ void cli_help(void)
            "                        with --budget, whole files first and\n"
            "                        outlines for whatever does not fit\n"
            "  --config              print the resolved configuration and exit\n"
+           "  --find PATTERN        fixed-string search; print path:line: text\n"
+           "                        for each match (grep -F style), then exit\n"
            "\n"
            "  diff reports staged, unstaged and untracked changes by default;\n"
            "  deleted files are never included.\n"
@@ -310,6 +314,7 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
     o->query = NULL;
     o->output = NULL;
     o->fake_ls = NULL;
+    o->find = NULL;
 
     opterr = 0;
     optind = 1;
@@ -420,6 +425,13 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
             break;
         case OPT_CONFIG:
             o->show_config = 1;
+            break;
+        case OPT_FIND:
+            if (!optarg[0]) {
+                *exit_code = usage_error("empty --find pattern", NULL);
+                return CLI_EXIT;
+            }
+            o->find = optarg;
             break;
         case OPT_HELP:
             cli_help();
