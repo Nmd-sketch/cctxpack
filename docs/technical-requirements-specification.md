@@ -100,7 +100,9 @@ inbound opportunities (recruiters/companies referencing the profile).
   (bounded by the git root; outside a git work tree, cwd only). Keys: `budget`,
   `format`, `include`, `exclude`, `max_file_tokens`, `tree`. Precedence:
   command-line flags > config file > defaults. Malformed config: exit 2 with the
-  JSON error offset.
+  JSON error offset. `--config` prints the effective configuration after the
+  merge as `key=value` lines and exits 0 — the resolution is observable, so a
+  caller never has to guess which layer won.
 - **FR-015** (S) Relevance — `--query "text"` re-ranks candidates by keyword overlap
   with paths/filenames (plain term frequency, path-weighted; deterministic tie-break
   by path). Approved-simple: no TF-IDF, no stemming.
@@ -166,6 +168,11 @@ inbound opportunities (recruiters/companies referencing the profile).
     from prose;
   - `count --outline` reports what would actually be sent, through the same
     helper `pack` uses, so the two cannot disagree;
+  - the **manifest** describes the bundle, not the files it was built from:
+    under `--outline` its `tokens` is the outline for every file emitted as
+    one. A manifest that counted full text for outlined files reported 47,008
+    for a bundle holding 4,177 — 11×, and in the safe direction, which made it
+    easy to miss.
   - measured: **10.8× smaller** on this repository's `src/` (29 files,
     44,078 → 4,091 tokens), 3.9× across the whole repository (which blends in
     Markdown), 2.5× on an unrelated C++ codebase. Prose is refused by
@@ -353,9 +360,9 @@ plugins, shell completions (post-v1, low cost).
 | FR-023 | `test_format.c` (all four formats) + `e2e_manifest_is_deterministic`, `e2e_manifest_does_not_break_budget` |
 | FR-024 | `tests/test_redact.c` (10 unit tests) + `e2e_redact_is_opt_in`, `e2e_redact_is_deterministic`, `e2e_redact_rejected_with_tree`, `format_manifest_redactions_per_format` |
 | - | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
-| FR-025 | `tests/test_outline.c` (13 unit tests) + `e2e_outline_modes_and_budget`, `e2e_count_outline_agrees_with_pack` |
+| FR-025 | `tests/test_outline.c` (13 unit tests) + `e2e_outline_modes_and_budget`, `e2e_count_outline_agrees_with_pack`, `e2e_manifest_tokens_match_outline` |
 | FR-026 | `tests/test_read.c` (`read_reports_packed_and_reason`, `read_small_file_is_not_truncated`, `read_token_cap_still_applies_over_read_cap`, `read_trunc_reason_names`) + `tests/test_format.c` (`format_manifest_truncation_per_format`, `format_manifest_all_optional_fields`) + `e2e_count_reports_truncation`, `e2e_token_cap_holds_over_read_cap` |
-| FR-014 | `tests/test_config.c` |
+| FR-014 | `tests/test_config.c`, `tests/test_cli.c` |
 | FR-015 | `tests/test_pack.c` |
 | FR-016 | Windows-only test |
 | FR-019 | `tests/test_files.c` |

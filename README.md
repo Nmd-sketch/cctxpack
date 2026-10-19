@@ -32,7 +32,7 @@ cmake --build build --parallel
 **Linux (static, no runtime deps):**
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-linux-x86_64.tar.gz"
 sha256sum -c SHA256SUMS 2>/dev/null || sha256sum cctxpack-linux-x86_64.tar.gz
 tar xzf cctxpack-linux-x86_64.tar.gz
@@ -42,7 +42,7 @@ sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 **macOS (universal — Apple Silicon and Intel):**
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-macos-universal.tar.gz"
 tar xzf cctxpack-macos-universal.tar.gz
 sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
@@ -51,7 +51,7 @@ sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 **Windows (PowerShell):**
 
 ```powershell
-$VERSION = "0.1.0"
+$VERSION = "0.2.0"
 Invoke-WebRequest "https://github.com/Nmd-sketch/cctxpack/releases/download/v$VERSION/cctxpack-windows-x64.zip" -OutFile cctxpack.zip
 Expand-Archive cctxpack.zip -DestinationPath .
 .\pkg\cctxpack.exe --version
@@ -100,6 +100,118 @@ cctxpack diff --patch --format json   # machine-readable, still valid JSON
 
 Untracked files have no diff representation, so they appear only in plain
 `cctxpack diff`, never in `--patch`.
+
+## Commands
+
+Four commands. `pack` is the default, so `cctxpack .` and `cctxpack pack .` are
+the same thing.
+
+| Command | What it does |
+|---|---|
+| `cctxpack [pack] [paths...]` | Emit the context bundle (default command) |
+| `cctxpack count [paths...]` | Per-file `bytes` / `lines` / `tokens` table, no content |
+| `cctxpack tree [path]` | Render the directory tree only |
+| `cctxpack diff [--staged]` | Pack files changed since `HEAD` |
+
+`count` is the cheapest way to answer "how big is this, and what would I be
+sending?" without generating a bundle. `tree` is the cheapest way to answer
+"what is even in here?".
+
+## Options
+
+Every flag the binary accepts. Value-taking flags show their argument;
+`count` and `tree` ignore the bundling flags (`--budget`, `-o`, `--clipboard`).
+
+| Flag | Argument | Applies to | Meaning |
+|---|---|---|---|
+| `--budget N` | integer | pack, diff | Token budget (est.). Auto-enables `--report`. Exit 3 if nothing fits |
+| `--format F` | `md`\|`xml`\|`json`\|`txt` | all | Output format (default `md`) |
+| `--include G` | glob, repeatable | all | Include only matching paths |
+| `--exclude G` | glob, repeatable | all | Drop matching paths |
+| `--max-file-tokens N` | integer | pack, diff, count | Truncate a file above N est. tokens |
+| `--sort S` | `name`\|`mtime`\|`size` | all | Ordering (default `name`) |
+| `--query TEXT` | string | pack, diff | Re-rank candidates by keyword overlap |
+| `--tree` / `--no-tree` | — | pack, diff | Include/omit the directory tree (default on, off for `diff`) |
+| `--report` | — | pack, diff | Print the budget report on stderr |
+| `--outline` | — | pack, diff, count | Send declarations instead of whole files |
+| `--redact` | — | pack, diff | Replace credential-shaped text (opt-in) |
+| `--config` | — | all | Print the resolved configuration and exit |
+| `-o FILE` | path | pack, diff | Write the bundle to FILE (default stdout) |
+| `--clipboard` | — | pack, diff | Copy to the Windows clipboard |
+| `--staged` | — | diff | Staged changes only |
+| `--patch` | — | diff | Emit the unified diff instead of whole files |
+| `-h`, `--help` | — | all | Usage |
+| `-V`, `--version` | — | all | Version |
+
+### Reading the budget report
+
+`--budget` turns the report on by itself; `--report` asks for it explicitly.
+It goes to **stderr**, so it never corrupts a bundle piped to stdout.
+
+```sh
+cctxpack src --outline --budget 8000 --report -o ctx.md
+```
+
+```
+cctxpack: included 12 files (6 at outline), excluded 17
+cctxpack: est. tokens 7980/8000 (budget)
+```
+
+`included` counts what made it in; the parenthetical says how many of those
+arrived as signatures rather than whole files. If nothing fits, cctxpack says
+why and exits 3 rather than emitting an empty bundle:
+
+```
+cctxpack: nothing fits the budget (reserve 216, budget 5)
+```
+
+The reserve is the header, tree and closing markup — the parts of the bundle
+that are not file content. A budget smaller than the reserve cannot be honoured
+by any selection, which is why that case is reported rather than silently
+truncated.
+
+### Seeing what a flag resolved to
+
+`.cctxpack.json`, command-line flags and defaults all set the same values, so
+"why is my budget 8000 when I passed 6000?" needs an answer that is not a guess:
+
+```sh
+cctxpack --config
+cctxpack --config --budget 6000   # the flag wins, and says so
+```
+
+```
+file=/home/me/proj/.cctxpack.json
+budget=6000
+max_file_tokens=4000
+format=md
+sort=name
+tree=1
+include=
+exclude=*.log
+redact=0
+outline=0
+```
+
+`file=` is empty when no config file was found. An empty `include=`/`exclude=`
+means none were set; repeated globs appear as `include+=` lines.
+
+### The man page
+
+A full reference ships in every release archive (`docs/man1/cctxpack.1` in the
+tarball/zip) and covers what this README does not: the complete flag semantics,
+plus dedicated **OUTLINE**, **TRUNCATION**, **REDACTION**, **CONFIGURATION**,
+**ENVIRONMENT** and **EXAMPLES** sections.
+
+```sh
+man ./docs/man1/cctxpack.1      # from a checkout
+man cctxpack                    # after installing to a manpath
+```
+
+The three sections worth reading before sending a repo to a hosted model are
+REDACTION (what it does and, more importantly, what it will not catch),
+TRUNCATION (when a number describes less than it appears to) and OUTLINE (when
+the scanner refuses and sends whole text instead).
 
 ### Dropping context without touching git (`.cctxpackignore`)
 
@@ -172,14 +284,15 @@ cctxpack src --outline --format md
 ```
 
 ```markdown
-### pack.c  (24 decls, outline)
-```c
-     1: #include "pack.h"
-     3: #include "format.h"
-     4: #include "fit.h"
-     ...
-   239: static int load_content(const pack_opts *o, char *full, ...)
-   ...
+### pack.c  (27 decls, outline)
+
+       1: #include "pack.h"
+       3: #include "format.h"
+       4: #include "fit.h"
+       ...
+      47: static int cmp_item(const void *a, const void *b)
+      63: static void report(const pack_opts *o, const pack_item *items, ...
+      ...
 ```
 
 Combined with `--budget`, it becomes **progressive disclosure** — the most
@@ -191,31 +304,29 @@ cctxpack src --outline --budget 8000 --report -o ctx.md
 ```
 
 ```
-  ### cli.c                  whole      2,146 est.
-  ### cli.h                  whole
-  ### cmd.c                  whole
-  ### cmd.h                  whole
-  ### config.c  (18 decls, outline)
-  ### files.c   (37 decls, outline)
-  ...
-  cctxpack: est. tokens 7980/8000 (budget)
+cctxpack: included 9 files, excluded 20
+cctxpack: excluded files.c (over budget)
+cctxpack: excluded format.c (over budget)
+...
+cctxpack: est. tokens 7957/8000 (budget)
 ```
 
-At the same budget, `cctxpack src --budget 8000` fits **9** files, all whole.
-With `--outline` it fits **12** — 6 whole and 6 as signatures. That is the actual
-trade, stated plainly: the same budget covers more of the repository, and fewer
-of the files arrive complete.
+At the same budget, `cctxpack src --budget 8000` fits **6** files, all whole.
+With `--outline` it fits **9** — 5 whole and 4 as signatures (`--format json`
+is how you tell which is which: an outlined file carries an `outline` array
+instead of `content`). That is the actual trade, stated plainly: the same
+budget covers more of the repository, and fewer of the files arrive complete.
 
-On this repository's `src/` that turns 44,078 tokens into 4,091 — **10.8×
+On this repository's `src/` that turns 47,120 tokens into 4,177 — **11.3×
 smaller**. Measured across corpora:
 
 | Corpus | Files | Full text | Outline | Smaller by |
 |---|---:|---:|---:|---:|
-| `cctxpack/src/` (C) | 29 | 44,078 | 4,091 | 91% |
-| `cctxpack/tests/` (C) | 20 | 35,931 | 3,572 | 90% |
+| `cctxpack/src/` (C) | 29 | 47,120 | 4,177 | 91% |
+| `cctxpack/tests/` (C) | 20 | 40,760 | 3,733 | 91% |
 | `cctxpack/vendor/` (C) | 14 | 53,637 | 5,241 | 90% |
 | `sniff/` (C++) | 99 | 83,245 | 33,357 | 60% |
-| `cctxpack/` (whole repo) | 77 | 174,365 | 44,633 | 74% |
+| `cctxpack/` (whole repo) | 77 | 185,466 | 48,110 | 74% |
 | `.agency-agents/` (Markdown) | 336 | 1,222,617 | 1,216,300 | 1% |
 
 The last row is the honest one, and it is why the table exists. **Outline mode
@@ -233,11 +344,15 @@ C++ codebase, 16 of 99 files refused, and 15 of those were Markdown.
 With `--format json` the outline is a **structured array**, not rendered text:
 
 ```json
-{"path": "src/pack.c", "tokens": 1043, "outline": [
-  {"line": 1, "decl": "#include \"pack.h\""},
-  {"line": 31, "decl": "static int cmp_item(const void *a, const void *b)"}
+{"path": "fit.c", "tokens": 28, "outline": [
+  {"line": 8, "decl": "#include \"fit.h\""},
+  {"line": 10, "decl": "size_t pack_fit(const size_t *ests, size_t n, size_t remaining,"}
 ]}
 ```
+
+Note `tokens` is the **outline's** size (28 here, against 196 for the file's
+full text) — the manifest and the per-file counts both describe the bundle, not
+the files it was built from.
 
 A consumer can select from an array; it cannot select from prose. And
 `cctxpack count --outline` reports what would actually be sent, through the same

@@ -28,6 +28,7 @@ typedef struct {
     int patch;
     int redact;
     int outline;
+    int show_config;
     const char *commit;
     const char *query;
     const char *output;
