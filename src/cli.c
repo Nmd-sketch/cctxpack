@@ -31,6 +31,7 @@ enum {
     OPT_PATCH,
     OPT_REDACT,
     OPT_OUTLINE,
+    OPT_CONFIG,
     OPT_HELP,
     OPT_VERSION
 };
@@ -51,6 +52,7 @@ static const struct option longopts[] = {
     { "patch", no_argument, NULL, OPT_PATCH },
     { "redact", no_argument, NULL, OPT_REDACT },
     { "outline", no_argument, NULL, OPT_OUTLINE },
+    { "config", no_argument, NULL, OPT_CONFIG },
     { "help", no_argument, NULL, OPT_HELP },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -85,6 +87,7 @@ void cli_help(void)
            "  --outline             send declarations instead of whole files;\n"
            "                        with --budget, whole files first and\n"
            "                        outlines for whatever does not fit\n"
+           "  --config              print the resolved configuration and exit\n"
            "\n"
            "  diff reports staged, unstaged and untracked changes by default;\n"
            "  deleted files are never included.\n"
@@ -414,6 +417,9 @@ cli_action cli_parse(int argc, char **argv, const char *cmd, pack_opts *o,
             break;
         case OPT_OUTLINE:
             o->outline = 1;
+            break;
+        case OPT_CONFIG:
+            o->show_config = 1;
             break;
         case OPT_HELP:
             cli_help();

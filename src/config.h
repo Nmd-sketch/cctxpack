@@ -33,5 +33,8 @@ int config_read(const char *path, config *c);
 int config_merge(const config *c, pack_opts *o);
 /* find + read + merge.  Returns 0, 2 or -1. */
 int config_apply(pack_opts *o);
+/* Print the effective configuration as `key=value` lines, one setting per
+ * line, and return.  Used by --config. */
+void config_print(const pack_opts *o);
 
 #endif

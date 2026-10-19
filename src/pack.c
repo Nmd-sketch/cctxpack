@@ -161,7 +161,12 @@ static void manifest_of(const pack_opts *o, const pack_item *items, size_t n,
             continue;
         bytes += (size_t)items[i].size;
         packed += items[i].packed;
-        tokens += items[i].tokens;
+        /* `tokens` describes the bundle, so under --outline it is the outline
+         * for the files that were actually emitted as one.  FR-007's rule that
+         * a count is the content estimate still holds for every file sent whole.
+         * `count --outline` reaches the same number through count_of(), and the
+         * two must not disagree. */
+        tokens += items[i].as_outline ? items[i].ol_tokens : items[i].tokens;
         if (items[i].truncated)
             trunc++;
         h = fnv1a64(h, items[i].path, strlen(items[i].path) + 1);

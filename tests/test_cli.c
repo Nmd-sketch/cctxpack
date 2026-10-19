@@ -229,6 +229,26 @@ TEST parse_tree_flag_sets_explicit(void)
     PASS();
 }
 
+TEST parse_config_flag(void)
+{
+    char *argv[] = { "cctxpack", "--config" };
+    char *argv2[] = { "cctxpack", "--config", "--budget", "500" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    /* accepted, and parsing continues: main prints and exits after the merge */
+    ASSERT(cli_parse(2, argv, "pack", &o, &code) == CLI_RUN);
+    ASSERT_EQ(1, o.show_config);
+
+    code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(4, argv2, "pack", &o, &code) == CLI_RUN);
+    ASSERT_EQ(1, o.show_config);
+    ASSERT_EQ(1, o.has_budget);
+    ASSERT_EQ((size_t)500, o.budget);
+    PASS();
+}
+
 /* A scratch directory outside the repository work tree: file discovery there
  * falls back to a plain walk, so a probe can control every file it sees. */
 static char *tmp_scratch(const char *name)
@@ -964,6 +984,76 @@ TEST e2e_manifest_is_deterministic(void)
     PASS();
 }
 
+/* Under --outline the bundle carries declarations, so the manifest's token
+ * count must describe the bundle rather than the files it was built from.
+ * count_of() in cmd.c already reported the outline size; manifest_of() summed
+ * the full-text estimate instead, so the two disagreed by 11x on src/. */
+TEST e2e_manifest_tokens_match_outline(void)
+{
+    char *dir = scratch("manoutline");
+    char *out = scratch("e2e_manoutline.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    char *cnt = scratch("e2e_manoutline_count.json");
+    ASSERT(dir && out && err && nul && cnt);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    char fp[1024];
+    snprintf(fp, sizeof(fp), "%s/a.c", dir);
+    const char *body =
+        "#include <stdio.h>\n"
+        "static int helper(int x)\n{\n    return x + 1;\n}\n"
+        "int alpha(void)\n{\n    return helper(1);\n}\n"
+        "int beta(void)\n{\n    return helper(2);\n}\n";
+    ASSERT(test_write_file(fp, body, strlen(body)) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+
+    char args[1024];
+    snprintf(args, sizeof(args),
+        "pack . --outline --no-tree --format json -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    /* count writes to stdout; -o is a pack flag */
+    snprintf(args, sizeof(args), "count . --outline --no-tree --format json");
+    ASSERT_EQ(0, run_in(dir, args, cnt, err));
+
+    char *pj = test_read_all(out, NULL);
+    char *cj = test_read_all(cnt, NULL);
+    ASSERT(pj && cj);
+    cJSON *pr = cJSON_Parse(pj);
+    cJSON *cr = cJSON_Parse(cj);
+    ASSERT(pr && cr);
+
+    const cJSON *pm = cJSON_GetObjectItemCaseSensitive(pr, "manifest");
+    const cJSON *pt = cJSON_GetObjectItemCaseSensitive(pm, "tokens");
+    const cJSON *ct = cJSON_GetObjectItemCaseSensitive(cr, "total");
+    const cJSON *ctt = cJSON_GetObjectItemCaseSensitive(ct, "tokens");
+    ASSERT(pm && pt && ct && ctt);
+    ASSERT(cJSON_IsNumber(pt) && cJSON_IsNumber(ctt));
+
+    /* the whole point: pack and count describe the same bundle */
+    ASSERT_EQ((size_t)pt->valuedouble, (size_t)ctt->valuedouble);
+    /* and it is the outline, not the full text (this file outlines to far
+     * less than its 15 lines of C, so equality with full text would mean the
+     * manifest never learned about the outline) */
+    ASSERT((size_t)ctt->valuedouble < tokens_estimate(body, strlen(body)));
+
+    cJSON_Delete(pr);
+    cJSON_Delete(cr);
+    free(pj);
+    free(cj);
+
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(cnt);
+    free(dir);
+    PASS();
+}
+
 /* The manifest is rendered after the budget fit, so the reserve must have
  * accounted for it or a tight budget would be overshot by its own header. */
 TEST e2e_manifest_does_not_break_budget(void)
@@ -1636,6 +1726,7 @@ SUITE(cli_suite)
     RUN_TEST(parse_staged_only_with_diff);
     RUN_TEST(parse_clipboard_flag);
     RUN_TEST(parse_tree_flag_sets_explicit);
+    RUN_TEST(parse_config_flag);
 }
 
 SUITE(e2e_suite)
@@ -1659,6 +1750,7 @@ SUITE(e2e_suite)
     RUN_TEST(e2e_patch_rejected_without_diff);
 RUN_TEST(e2e_json_is_valid_without_tree);
 RUN_TEST(e2e_manifest_is_deterministic);
+RUN_TEST(e2e_manifest_tokens_match_outline);
 RUN_TEST(e2e_manifest_does_not_break_budget);
 RUN_TEST(e2e_redact_is_opt_in);
 RUN_TEST(e2e_redact_is_deterministic);

@@ -288,3 +288,35 @@ int config_apply(pack_opts *o)
     free(path);
     return rc;
 }
+
+static void print_globs(const char *key, const strlist *l)
+{
+    if (l->n == 0) {
+        printf("%s=\n", key);
+        return;
+    }
+    for (size_t i = 0; i < l->n; i++)
+        printf("%s%s=%s\n", key, (i == 0) ? "" : "+", l->v[i]);
+}
+
+void config_print(const pack_opts *o)
+{
+    char *path = NULL;
+    if (config_find(&path) > 0)
+        printf("file=%s\n", path);
+    else
+        printf("file=\n");
+    free(path);
+
+    printf("budget=%zu\n", o->has_budget ? o->budget : (size_t)0);
+    printf("max_file_tokens=%zu\n",
+        o->max_tokens_set ? o->max_file_tokens : (size_t)0);
+    printf("format=%s\n", format_name(o->format));
+    printf("sort=%s\n", (o->sort == SORT_MTIME) ? "mtime"
+        : (o->sort == SORT_SIZE) ? "size" : "name");
+    printf("tree=%d\n", (o->tree_set ? o->want_tree : 1) ? 1 : 0);
+    print_globs("include", &o->include);
+    print_globs("exclude", &o->exclude);
+    printf("redact=%d\n", o->redact ? 1 : 0);
+    printf("outline=%d\n", o->outline ? 1 : 0);
+}

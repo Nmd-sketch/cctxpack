@@ -45,10 +45,10 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 
 | Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | Unit tests |
 |---|---|---|---|---|---|
-| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 43 | e2e smoke |
-| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 455 | `test_cli.c` |
+| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 47 | e2e smoke |
+| `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 373 | 461 | `test_cli.c` |
 | `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | - | 257 | `test_cli.c` |
-| `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge | 340 | – | 269 | `test_config.c` |
+| `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge, `--config` dump | 340 | – | 298 | `test_config.c` |
 | `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 583 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 148 | `test_files.c` |
 | `src/read.c` | open/read, binary sniff, read + token caps, truncation reasons (M11) | 215 | 149 | 186 | `test_read.c` |
@@ -60,8 +60,8 @@ review (2026-10-16); the **M3** column is the measurement at the M3 review
 | `src/pack.c` | ordering, sink, budget fit, report assembly, `--patch` bundle, manifest, redaction + outline wiring | 650 | 239 | 598 | `test_pack.c` |
 | `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 512 | `test_format.c` |
 | `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 242 | 301 | `test_util.c` |
-| **total (`.c`)** | | | 1,710 | **4,394** | |
-| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,743** | |
+| **total (`.c`)** | | | 1,710 | **4,431** | |
+| **total (`.c`+`.h`)** | | **≤ 5,200 (NFR-09)** | 1,857 | **4,789** | |
 
 **Current measurement (2026-10-17, after M9).** 3,752 lines against the 4,000
 ceiling. `src/tokens.c` grew from 30 to 128 lines to carry the per-class
@@ -127,6 +127,52 @@ Fixing the second exposed a latent hang: the cut loop scanned backwards one
 line at a time, re-estimating the entire prefix each step. That is quadratic,
 and on a 4 MB file it never finishes — it had simply never been reached, because
 the `else if` meant the loop only ever saw small files.
+
+**M11.1 — the man page had been promising a flag that did not exist.**
+`docs/man1/cctxpack.1` documented `--config` ("Print the resolved configuration
+and exit") under OPTIONS, but `cli.c` had no such long option and the binary
+rejected it. This shipped in v0.1.0: the flag was documented, never implemented,
+and no test read the man page, so nothing caught it. It is now implemented
+rather than removed, because for an agent-facing tool the resolution being
+*observable* is the point — a caller can ask which layer won instead of
+inferring it from the output. `config_print()` prints the merged `pack_opts`
+after the CLI/config/default resolution, one `key=value` per line, and reports
+the config file that was merged (empty when there is none). It costs **39**
+lines across three modules (`config.c` 269→298, `cli.c` 455→461, `main.c`
+43→47), landing at **4,789** against the 5,200 ceiling (with M11.2 below).
+
+**M11.2 — the manifest counted files the bundle no longer contained.** Verifying
+the flag surface for the README rewrite surfaced a defect M10 left behind:
+`pack --outline` on `src/` emitted a manifest claiming **47,008** tokens for a
+bundle that held **4,177**. Two separate token fields existed per item —
+`tokens` (full text, set at `pack.c:262`) and `ol_tokens` (the outline, set at
+`pack.c:286`) — and `manifest_of()` summed `tokens` unconditionally. `count_of()`
+in `cmd.c` had always reported the outline, so the two commands disagreed by
+**11x** on the same input, which is precisely what M10's review recorded as
+impossible ("the two cannot silently disagree").
+
+`format.c` was already correct: the per-file `tokens` in JSON/XML carried the
+outline size for outlined files (measured: 361 across 4 outlined files). So the
+manifest was the sole offender, and the fix is one line — honour `as_outline`,
+the flag that already records what was actually emitted. `count --outline` and
+the manifest now agree exactly (4,177 = 4,177), and a mixed bundle reconciles
+to the penny (7,955 manifest = 7,955 per-file sum over 5 whole + 4 outlined).
+
+The lesson worth keeping is about *which* field was wrong. Both were called
+`tokens`, both were estimates, and the wrong one was also the more conservative
+number — an agent trusting it would have reserved 11x the context it needed.
+Over-estimating is the safe direction for a *budget*, and the wrong direction
+for a *report*.
+
+The deeper miss was in the test, not the code. `e2e_count_outline_agrees_with_pack`
+already existed and passed throughout — but it ran `count` twice, full text
+against outline, and asserted `ol < full`. It never read `pack`'s manifest at
+all. Its **name** promised a cross-command invariant while its **body** checked
+a within-command one, so the one comparison that would have failed was the one
+it did not make. The name is the claim; the assertion has to be the claim too.
+`e2e_manifest_tokens_match_outline` now compares `count --outline` against
+`pack --outline`'s manifest directly, and was verified to fail (149/150) with
+the fix reverted.
 
 **M8 review outcome (owner decision, 2026-10-17).** The provenance manifest adds
 158 lines and pushed `pack.c` from 451 to 502 against a 460 cap. The M7 review

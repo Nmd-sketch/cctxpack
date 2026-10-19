@@ -31,6 +31,10 @@ int main(int argc, char **argv)
         return 2;
     if (crc == -1)
         return 1;
+    if (o.show_config) {
+        config_print(&o);
+        return 0;
+    }
     /* Provenance for the bundle manifest.  Resolved once, from the work tree
      * rather than o->root, so it is correct for diff too (which re-points root
      * at the git top level).  NULL outside a work tree, which renders as
