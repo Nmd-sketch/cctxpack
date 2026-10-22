@@ -19,8 +19,10 @@ static void join_path(char *buf, size_t cap, const char *root, const char *rel)
 
 static int discover(const pack_opts *o, strlist *paths)
 {
-    if (files_discover(o->root, o->fake_ls, paths, NULL) != 0)
+    if (files_discover(o->root, o->fake_ls, paths, NULL) != 0) {
         return -1;
+    }
+
     root_filter(paths, &o->path_args);
     glob_filter(paths, &o->include, &o->exclude);
     return 0;
@@ -38,6 +40,7 @@ static void count_of(const pack_opts *o, const char *path, const char *data,
     memset(ol, 0, sizeof(*ol));
     *lines = 0;
     *tokens = 0;
+
     if (o->outline && outline_build(data, len, path, ol) == 0) {
         strbuf t;
         strbuf_init(&t);
@@ -54,6 +57,7 @@ static void count_of(const pack_opts *o, const char *path, const char *data,
         strbuf_free(&t);
         return;
     }
+
     outline_free(ol);
     for (size_t k = 0; k < len; k++) {
         if (data[k] == '\n')

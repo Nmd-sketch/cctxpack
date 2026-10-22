@@ -45,9 +45,9 @@ working tree. Caps were set to measured value + ~15% headroom.
 
 | Module | Responsibility | LOC cap | LOC (M2) | LOC (M3) | LOC (now) | Unit tests |
 |---|---|---|---|---|---|---|
-| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 41 | 55 | e2e smoke |
+| `src/main.c` | command dispatch, version, `config_apply`, commit resolution | 100 | 30 | 41 | 61 | e2e smoke |
 | `src/cli.c` | getopt wrapper, command-aware parsing, flag validation, path-operand resolution, `--help` text | 520 | 370 | 433 | 494 | `test_cli.c` |
-| `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | – | 182 | 265 | `test_cli.c` |
+| `src/cmd.c` | `count` / `tree` / `diff` command bodies, truncation reporting | 300 | – | 182 | 269 | `test_cli.c` |
 | `src/config.c` | `.cctxpack.json` discovery + load (cJSON), precedence merge, `--config` dump | 340 | – | 290 | 322 | `test_config.c` |
 | `src/files.c` | `git ls-files` runner, fallback walker, git top/status/patch/commit runners, strlist, sort modes, .cctxpackignore | 650 | 320 | 448 | 612 | `test_files.c` |
 | `src/glob.c` | glob matcher + include/exclude/root filters | 200 | 157 | 157 | 157 | `test_files.c` |
@@ -61,8 +61,8 @@ working tree. Caps were set to measured value + ~15% headroom.
 | `src/format.c` | md/xml/json/txt emitters, tree renderer, escapers, manifest + outline rendering | 550 | 170 | 388 | 534 | `test_format.c` |
 | `src/util.c` | strbuf, `str_dup`, lexical `/`-normalization, UTF-8→wide path open, UTF-8→UTF-16LE, FNV-1a | 360 | 181 | 311 | 322 | `test_util.c` |
 | `src/find.c` | fixed-string search, `path:line: text` output (M13) | 130 | – | – | 114 | `test_cli.c` |
-| **total (`.c`)** | | | 1,646 | 2,821 | 4,835 | |
-| **total (`.c`+`.h`)** | | **≤ 6,000 (NFR-09)** | **1,793** | **3,075** | **5,271** | |
+| **total (`.c`)** | | | 1,646 | 2,821 | 4,845 | |
+| **total (`.c`+`.h`)** | | **≤ 6,000 (NFR-09)** | **1,793** | **3,075** | **5,281** | |
 
 **Measurement correction (M13, 2026-10-19).** The table above is re-measured in
 `wc -l` from git at each milestone commit (`6c5ff00` for M2, `8317a60` for M3)
@@ -91,11 +91,13 @@ that made the aggregate look comfortable.
 
 **M13 review outcome (owner decision, 2026-10-19).** The outline silent-drop
 hotfix plus `--find` add **153** lines (`find.c` 114, `find.h` 15, and the
-`pack.c` / `cli.c` / `main.c` / `pack.h` wiring), landing at **5,271** — a
-71-line overrun of the 5,200 ceiling, which NFR-09 says "triggers a design
-review, not more code". The review outcome is to **raise NFR-09 5,200 → 6,000**,
-applying the same "measured value + ~15 % headroom" rule (5,271 × 1.15 = 6,061,
-rounded down to a clean 6,000, matching how M3's 3,536 became 3,500).
+`pack.c` / `cli.c` / `main.c` / `pack.h` wiring), landing at **5,271**. A 10-line
+owner readability pass on `cmd.c` and `main.c` (2026-10-22) brings the release
+tree to **5,281** — an 81-line overrun of the 5,200 ceiling, which NFR-09 says
+"triggers a design review, not more code". The review outcome is to **raise
+NFR-09 5,200 → 6,000**, applying the same "measured value + ~15 % headroom" rule
+(5,271 × 1.15 = 6,061 at review time, 5,281 × 1.15 = 6,073 at release — either
+rounds down to a clean 6,000, matching how M3's 3,536 became 3,500).
 `src/find.c` gets a new cap of **130** (114 measured + ~14 %).
 
 The 153 lines were kept rather than trimmed because they are a defect fix with

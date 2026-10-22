@@ -289,7 +289,8 @@ inbound opportunities (recruiters/companies referencing the profile).
   triggers a design review, not more code. (Raised 1,800 → 2,000 at the M2 review,
   2,000 → 3,500 at the M3 review, 3,500 → 4,000 at the M9 review,
   4,000 → 5,200 at the M10 review, and 5,200 → 6,000 at the M13 review: M13
-  measures 5,271, having added the outline silent-drop hotfix and `--find`.
+  measures 5,281, having added the outline silent-drop hotfix, `--find`, and an
+  owner readability formatting pass.
   Across M9 and M10 the work deferred from the v1 scope landed — the provenance
   manifest, opt-in credential redaction, and outline mode. Each review applied this
   document's own "measured value + ~15 % headroom" rule rather than trimming
