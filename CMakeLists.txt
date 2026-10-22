@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(cctxpack VERSION 0.2.0 LANGUAGES C)
+project(cctxpack VERSION 0.2.1 LANGUAGES C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -97,6 +97,7 @@ add_executable(cctxpack
     src/pack.c
     src/score.c
     src/fit.c
+    src/find.c
     src/outline.c
     src/redact.c
     src/format.c

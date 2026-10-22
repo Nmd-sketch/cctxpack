@@ -33,6 +33,7 @@ typedef struct {
     const char *query;
     const char *output;
     const char *fake_ls;
+    const char *find;
 } pack_opts;
 
 int pack_run(const pack_opts *o);

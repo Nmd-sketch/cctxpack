@@ -213,6 +213,33 @@ inbound opportunities (recruiters/companies referencing the profile).
     it bounds peak memory over an untrusted path, and a `--max-bytes 0` escape
     hatch would trade a bounded failure for an OOM.
 
+- **FR-027** (S) `--find PATTERN` — a fixed-string, line-oriented search that
+  prints `path:line: text` for every matching line and exits instead of
+  packing. An agent that already knows *what* it is looking for should not have
+  to generate a 50,000-token bundle to find out *where* it is.
+
+  Behaviour and guarantees:
+  - **fixed-string, case-sensitive** (`grep -F` semantics) — deliberately not a
+    regular expression: `regex.h` is POSIX and absent on MSVC, and a portable
+    regex (PCRE) would violate NFR-05's zero-dependency rule. A search that
+    behaves identically on every platform is worth more than backreferences;
+  - honours path arguments, `--include` and `--exclude`, so it searches exactly
+    the set a bundle would have contained — the selection model is shared rather
+    than reimplemented (design D-31);
+  - **skips binary files** instead of printing their bytes as if they were text;
+  - `--report` adds a `N matches in M files` summary on stderr, keeping matches
+    on stdout so a pipe is never corrupted (FR-017's rule, restated);
+  - `-o FILE` writes matches to a file, as everywhere else;
+  - exit codes are **distinguishable for scripting**: `0` = at least one match,
+    `4` = search succeeded but matched nothing. `4` is a new code rather than a
+    reuse of `1` because "not found" is a *successful query with an empty
+    result*, and conflating it with an I/O failure would force every caller to
+    inspect stderr to tell them apart. `1` (I/O), `2` (usage) and `3` (budget)
+    keep their meanings;
+  - an **empty pattern is a usage error (exit 2)**, not a match-everything
+    search — the same rule as `--query` and `--include`, because silently
+    matching every line of every file is never what was meant.
+
 ### Exit codes
 | Code | Meaning |
 |---|---|
@@ -220,6 +247,7 @@ inbound opportunities (recruiters/companies referencing the profile).
 | 1 | runtime error (I/O failure, git failure) |
 | 2 | usage error (unknown flag, bad arguments, invalid config, diff outside git) |
 | 3 | budget infeasible (FR-007) |
+| 4 | `--find` succeeded but matched nothing (FR-027) |
 
 ## 4. Non-functional Requirements
 
@@ -257,14 +285,20 @@ inbound opportunities (recruiters/companies referencing the profile).
   user paths in spawned commands; pathological inputs (huge files, symlink loops,
   hostile names) terminate with a clean error, not a hang or crash.
 - **NFR-09 Code budget** — own source (`src/*.c` + `src/*.h` physical lines,
-  vendor and tests excluded) ≤ 5,200 LOC. Exceeding a module budget (design §2.2)
+  vendor and tests excluded) ≤ 6,000 LOC. Exceeding a module budget (design §2.2)
   triggers a design review, not more code. (Raised 1,800 → 2,000 at the M2 review,
-  2,000 → 3,500 at the M3 review, 3,500 → 4,000 at the M9 review, and
-  4,000 → 5,200 at the M10 review: M10 measures 4,560, having added outline mode.
+  2,000 → 3,500 at the M3 review, 3,500 → 4,000 at the M9 review,
+  4,000 → 5,200 at the M10 review, and 5,200 → 6,000 at the M13 review: M13
+  measures 5,281, having added the outline silent-drop hotfix, `--find`, and an
+  owner readability formatting pass.
   Across M9 and M10 the work deferred from the v1 scope landed — the provenance
   manifest, opt-in credential redaction, and outline mode. Each review applied this
   document's own "measured value + ~15 % headroom" rule rather than trimming
   working, tested code to fit a pre-implementation estimate. See design §2.2/§12.)
+  **Measured as `wc -l`, blanks and comments included.** Figures recorded from M9
+  through M12 were non-blank counts running ~7 % low, which put the ceiling 71
+  lines from exhaustion while the doc still showed 86 % headroom; design §2.2
+  carries the full correction and the re-measured history.
 - **NFR-10 Documentation** — every flag and command appears in both `--help` and the
   README; requirements changes update this document in the same commit.
 - **NFR-11 Licensing** — MIT for our code; vendored libraries must be MIT/BSD/CC0
@@ -360,8 +394,9 @@ plugins, shell completions (post-v1, low cost).
 | FR-023 | `test_format.c` (all four formats) + `e2e_manifest_is_deterministic`, `e2e_manifest_does_not_break_budget` |
 | FR-024 | `tests/test_redact.c` (10 unit tests) + `e2e_redact_is_opt_in`, `e2e_redact_is_deterministic`, `e2e_redact_rejected_with_tree`, `format_manifest_redactions_per_format` |
 | - | `e2e_json_is_valid_without_tree` (regression: `--no-tree --format json`) |
-| FR-025 | `tests/test_outline.c` (13 unit tests) + `e2e_outline_modes_and_budget`, `e2e_count_outline_agrees_with_pack`, `e2e_manifest_tokens_match_outline` |
+| FR-025 | `tests/test_outline.c` (13 unit tests) + `e2e_outline_modes_and_budget`, `e2e_count_outline_agrees_with_pack`, `e2e_manifest_tokens_match_outline`, `e2e_outline_nobudget_keeps_refused_files` (regression: a no-budget `--outline` pack must not drop refused files) |
 | FR-026 | `tests/test_read.c` (`read_reports_packed_and_reason`, `read_small_file_is_not_truncated`, `read_token_cap_still_applies_over_read_cap`, `read_trunc_reason_names`) + `tests/test_format.c` (`format_manifest_truncation_per_format`, `format_manifest_all_optional_fields`) + `e2e_count_reports_truncation`, `e2e_token_cap_holds_over_read_cap` |
+| FR-027 | `tests/test_cli.c` (`parse_find_flag`) + `e2e_find_matches_and_exit_codes` |
 | FR-014 | `tests/test_config.c`, `tests/test_cli.c` |
 | FR-015 | `tests/test_pack.c` |
 | FR-016 | Windows-only test |

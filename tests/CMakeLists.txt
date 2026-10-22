@@ -21,6 +21,7 @@ add_executable(tests
     ${CMAKE_SOURCE_DIR}/src/pack.c
     ${CMAKE_SOURCE_DIR}/src/score.c
     ${CMAKE_SOURCE_DIR}/src/fit.c
+    ${CMAKE_SOURCE_DIR}/src/find.c
     ${CMAKE_SOURCE_DIR}/src/outline.c
     ${CMAKE_SOURCE_DIR}/src/redact.c
     ${CMAKE_SOURCE_DIR}/src/format.c

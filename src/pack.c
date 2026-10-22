@@ -81,9 +81,14 @@ static void report(const pack_opts *o, const pack_item *items, size_t n,
     }
     fprintf(stderr, ", excluded %zu\n", n - included);
     for (size_t i = 0; i < n; i++) {
-        if (!items[i].included)
-            fprintf(stderr, "cctxpack: excluded %s (%s)\n", items[i].path,
-                items[i].binary ? "binary" : "over budget");
+        if (items[i].included)
+            continue;
+        /* "over budget" is only true when a budget exists; without one the
+         * only legitimate exclusion is a binary.  Saying "over budget" when
+         * no budget was set was a lie that cost an agent its README. */
+        const char *why = items[i].binary ? "binary"
+            : (o->has_budget ? "over budget" : "not included");
+        fprintf(stderr, "cctxpack: excluded %s (%s)\n", items[i].path, why);
     }
     if (o->has_budget)
         fprintf(stderr, "cctxpack: est. tokens %zu/%zu (budget)\n", used,
@@ -441,7 +446,6 @@ int pack_run(const pack_opts *o)
     if (o->want_tree)
         format_tree(&tree_all, paths.v, paths.n, o->format);
 
-    size_t ol_count = 0;
     size_t reserve = header_reserve + est_of(&tree_all)
         + est_of(&files_open) + est_of(&close);
     size_t remaining = o->budget > reserve ? o->budget - reserve : 0;
@@ -466,7 +470,6 @@ int pack_run(const pack_opts *o)
                 items[i].as_outline = 1;
                 items[i].est = items[i].ol_est;
                 remaining -= items[i].ol_est;
-                ol_count++;
                 count++;
             }
         }
@@ -480,16 +483,19 @@ int pack_run(const pack_opts *o)
         }
     } else if (o->outline) {
         /* No budget: the caller asked for outlines, so every parseable file
-         * becomes one. */
+         * becomes one.  Anything the scanner refused - or any binary - goes
+         * out WHOLE, because FR-025's contract is that a refusal emits the
+         * full text instead of dropping the file.  Excluding them here was
+         * silent content loss: a no-budget `--outline` pack of a repo used to
+         * lose its README and build files while still reporting exit 0. */
         for (size_t i = 0; i < paths.n; i++) {
+            items[i].included = 1;
+            count++;
             if (items[i].ol_ok && !items[i].binary) {
-                items[i].included = 1;
                 items[i].as_outline = 1;
                 items[i].est = items[i].ol_est;
-                ol_count++;
             }
         }
-        count = ol_count;
     } else {
         count = paths.n;
         for (size_t i = 0; i < paths.n; i++)

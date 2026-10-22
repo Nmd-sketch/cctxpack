@@ -32,7 +32,7 @@ cmake --build build --parallel
 **Linux (static, no runtime deps):**
 
 ```sh
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-linux-x86_64.tar.gz"
 sha256sum -c SHA256SUMS 2>/dev/null || sha256sum cctxpack-linux-x86_64.tar.gz
 tar xzf cctxpack-linux-x86_64.tar.gz
@@ -42,7 +42,7 @@ sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 **macOS (universal — Apple Silicon and Intel):**
 
 ```sh
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSLO "https://github.com/Nmd-sketch/cctxpack/releases/download/v${VERSION}/cctxpack-macos-universal.tar.gz"
 tar xzf cctxpack-macos-universal.tar.gz
 sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
@@ -51,7 +51,7 @@ sudo install -m 0755 pkg/cctxpack /usr/local/bin/cctxpack
 **Windows (PowerShell):**
 
 ```powershell
-$VERSION = "0.2.0"
+$VERSION = "0.2.1"
 Invoke-WebRequest "https://github.com/Nmd-sketch/cctxpack/releases/download/v$VERSION/cctxpack-windows-x64.zip" -OutFile cctxpack.zip
 Expand-Archive cctxpack.zip -DestinationPath .
 .\pkg\cctxpack.exe --version
@@ -136,6 +136,7 @@ Every flag the binary accepts. Value-taking flags show their argument;
 | `--outline` | — | pack, diff, count | Send declarations instead of whole files |
 | `--redact` | — | pack, diff | Replace credential-shaped text (opt-in) |
 | `--config` | — | all | Print the resolved configuration and exit |
+| `--find PATTERN` | string | all | Fixed-string search: print `path:line: text` for each match and exit. Exit 4 if no match |
 | `-o FILE` | path | pack, diff | Write the bundle to FILE (default stdout) |
 | `--clipboard` | — | pack, diff | Copy to the Windows clipboard |
 | `--staged` | — | diff | Staged changes only |
@@ -434,6 +435,38 @@ cctxpack discovers tracked/untracked files (respecting `.gitignore`), applies in
 | 1 | I/O/OOM/read error |
 | 2 | Usage/config error (invalid JSON, unknown flag, etc.) |
 | 3 | Nothing fits the budget |
+| 4 | `--find` ran fine but matched nothing |
+
+## Search: `--find`
+
+When you know a token exists but not where, `--find` answers "which file, which
+line" without building a bundle. It is a fixed-string, line-oriented search —
+`grep -F` semantics — so it needs no regex engine and behaves identically on
+every platform. Matches print as `path:line: text`:
+
+```sh
+cctxpack --find pack_run --include 'src/*'
+```
+
+```
+src/cmd.c:264:     return pack_run(o);
+src/main.c:54:     return pack_run(&o);
+src/pack.c:396: int pack_run(const pack_opts *o)
+src/pack.h:39: int pack_run(const pack_opts *o);
+```
+
+- Honours path arguments, `--include` and `--exclude`, so it searches exactly
+  what a bundle would have contained.
+- Skips binary files rather than printing their bytes as if they were text.
+- `--report` adds `N matches in M files` on stderr; `--report` still goes to
+  stderr, so piping matches to another command stays clean.
+- `-o FILE` writes the matches to a file instead of stdout.
+
+Exit codes are script-friendly: `0` means at least one match, `4` means the
+search ran but found nothing (distinct from `1` = I/O error and `2` = usage
+error), so `if cctxpack --find "$sym" >/dev/null; then ...` works without
+parsing output. An empty pattern is a usage error, not a match-everything
+search.
 
 ## Comparison vs repomix
 

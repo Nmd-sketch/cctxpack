@@ -249,6 +249,35 @@ TEST parse_config_flag(void)
     PASS();
 }
 
+TEST parse_find_flag(void)
+{
+    char *argv[] = { "cctxpack", "--find", "pack_run" };
+    char *argv2[] = { "cctxpack", "--find", "" };
+    char *argv3[] = { "cctxpack", "--find", "x", "--exclude", "vendor/*" };
+    pack_opts o;
+    int code = 0;
+    opts_reset(&o);
+    /* --find is a search MODE: parsing continues so main can dispatch it
+     * after config resolution, exactly like --config. */
+    ASSERT(cli_parse(3, argv, "pack", &o, &code) == CLI_RUN);
+    ASSERT(o.find != NULL);
+    ASSERT_STR_EQ("pack_run", o.find);
+
+    /* an empty pattern is a usage error, not a match-everything search */
+    code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(3, argv2, "pack", &o, &code) == CLI_EXIT);
+    ASSERT_EQ(2, code);
+
+    /* filters are recorded alongside the pattern so find_run can honour them */
+    code = 0;
+    opts_reset(&o);
+    ASSERT(cli_parse(5, argv3, "pack", &o, &code) == CLI_RUN);
+    ASSERT(o.find != NULL);
+    ASSERT_EQ(1, o.exclude.n);
+    PASS();
+}
+
 /* A scratch directory outside the repository work tree: file discovery there
  * falls back to a plain walk, so a probe can control every file it sees. */
 static char *tmp_scratch(const char *name)
@@ -1710,6 +1739,141 @@ TEST e2e_diff_outside_worktree(void)
     PASS();
 }
 
+/* Regression: a no-budget `--outline` pack used to DROP every file the scanner
+ * refused (README, build files, binaries) and still report exit 0 - and the
+ * report blamed "over budget" when no budget existed.  FR-025 says a refusal
+ * emits the full text instead of losing the file. */
+TEST e2e_outline_nobudget_keeps_refused_files(void)
+{
+    char *dir = scratch("olrefuse");
+    char *out = scratch("e2e_olrefuse.json");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    char *cnt = scratch("e2e_olrefuse_count.json");
+    ASSERT(dir && out && err && nul && cnt);
+    test_rm_rf(dir);
+    ASSERT(ctx_mkdir(dir) == 0);
+    /* one file that outlines, one the scanner must refuse (markdown) */
+    char cfp[1024], mfp[1024];
+    snprintf(cfp, sizeof(cfp), "%s/a.c", dir);
+    snprintf(mfp, sizeof(mfp), "%s/README.md", dir);
+    const char *body = "int alpha(void)\n{\n    return 1;\n}\n";
+    const char *md = "# Title\n\nsome prose the outline scanner refuses.\n";
+    ASSERT(test_write_file(cfp, body, strlen(body)) == 0);
+    ASSERT(test_write_file(mfp, md, strlen(md)) == 0);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" init -q", dir);
+    if (test_system(cmd) != 0)
+        SKIPm("git unavailable");
+
+    /* no --budget anywhere: both files must arrive */
+    char args[1024];
+    snprintf(args, sizeof(args),
+        "pack . --outline --no-tree --format json --report -o \"%s\"", out);
+    ASSERT_EQ(0, run_in(dir, args, nul, err));
+    char *e = test_read_all(err, NULL);
+    ASSERT(e != NULL);
+    /* the refusal reason must never claim a budget that was never set */
+    ASSERT(strstr(e, "over budget") == NULL);
+    ASSERT(strstr(e, "excluded 0") != NULL);
+    free(e);
+
+    char *pj = test_read_all(out, NULL);
+    ASSERT(pj != NULL);
+    cJSON *pr = cJSON_Parse(pj);
+    ASSERT(pr != NULL);
+    const cJSON *files = cJSON_GetObjectItemCaseSensitive(pr, "files");
+    ASSERT(cJSON_IsArray(files));
+    /* both the parseable C file and the refused markdown survive */
+    ASSERT_EQ(2, cJSON_GetArraySize(files));
+    const cJSON *it;
+    int saw_md = 0;
+    cJSON_ArrayForEach(it, files) {
+        const cJSON *p = cJSON_GetObjectItemCaseSensitive(it, "path");
+        if (p && strcmp(p->valuestring, "README.md") == 0)
+            saw_md = 1;
+    }
+    ASSERT_EQ(1, saw_md);
+    const cJSON *pm = cJSON_GetObjectItemCaseSensitive(pr, "manifest");
+    const cJSON *pt = cJSON_GetObjectItemCaseSensitive(pm, "tokens");
+    ASSERT(pm && pt && cJSON_IsNumber(pt));
+
+    /* and count must still agree with the bundle it describes */
+    snprintf(args, sizeof(args), "count . --outline --no-tree --format json");
+    ASSERT_EQ(0, run_in(dir, args, cnt, err));
+    char *cj = test_read_all(cnt, NULL);
+    ASSERT(cj != NULL);
+    cJSON *cr = cJSON_Parse(cj);
+    ASSERT(cr != NULL);
+    const cJSON *ct = cJSON_GetObjectItemCaseSensitive(cr, "total");
+    const cJSON *ctt = cJSON_GetObjectItemCaseSensitive(ct, "tokens");
+    ASSERT(ct && ctt && cJSON_IsNumber(ctt));
+    ASSERT_EQ((size_t)pt->valuedouble, (size_t)ctt->valuedouble);
+
+    cJSON_Delete(pr);
+    cJSON_Delete(cr);
+    free(pj);
+    free(cj);
+    test_rm_rf(dir);
+    free(out);
+    free(err);
+    free(nul);
+    free(cnt);
+    free(dir);
+    PASS();
+}
+
+/* --find must print grep-F style `path:line: text`, honour --exclude, exit 4
+ * when nothing matches (distinct from 1=I/O, 2=usage, 3=nothing fits), and
+ * skip binary files rather than dumping their bytes as "text". */
+TEST e2e_find_matches_and_exit_codes(void)
+{
+    char *out = scratch("e2e_find.txt");
+    char *err = scratch("e2e_err.txt");
+    char *nul = scratch("e2e_null.txt");
+    ASSERT(out && err && nul);
+
+    /* a real match against the fixture corpus: printf lives under src/ */
+    char args[1024];
+    snprintf(args, sizeof(args), "--find printf");
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, args, out, err));
+    char *b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "src/greet.c:5:") != NULL);
+    ASSERT(strstr(b, "src/main.c:5:") != NULL);
+    free(b);
+
+    /* --exclude narrows the search; greet.c is the only "hello," with a %s */
+    snprintf(args, sizeof(args), "--find \"hello, %%s\" --exclude src/*");
+    ASSERT_EQ(4, run_in(CTX_FIXTURE_DIR, args, out, err));
+
+    /* a pattern in no file at all: exit 4, no output, nothing on stderr but
+     * the pre-existing git notice */
+    snprintf(args, sizeof(args), "--find zzz_no_such_token");
+    ASSERT_EQ(4, run_in(CTX_FIXTURE_DIR, args, out, err));
+    b = test_read_all(out, NULL);
+    ASSERT(b != NULL);
+    ASSERT_EQ(0, (int)strlen(b));
+    free(b);
+
+    /* --report adds a machine-readable summary on stderr */
+    snprintf(args, sizeof(args), "--find printf --report");
+    ASSERT_EQ(0, run_in(CTX_FIXTURE_DIR, args, out, err));
+    b = test_read_all(err, NULL);
+    ASSERT(b != NULL);
+    ASSERT(strstr(b, "matches in") != NULL);
+    free(b);
+
+    /* an empty pattern is a usage error (exit 2), not match-everything */
+    snprintf(args, sizeof(args), "--find \"\"");
+    ASSERT_EQ(2, run_in(CTX_FIXTURE_DIR, args, out, err));
+
+    free(out);
+    free(err);
+    free(nul);
+    PASS();
+}
+
 SUITE(cli_suite)
 {
     RUN_TEST(parse_no_args_runs_pack);
@@ -1727,6 +1891,7 @@ SUITE(cli_suite)
     RUN_TEST(parse_clipboard_flag);
     RUN_TEST(parse_tree_flag_sets_explicit);
     RUN_TEST(parse_config_flag);
+    RUN_TEST(parse_find_flag);
 }
 
 SUITE(e2e_suite)
@@ -1761,5 +1926,7 @@ RUN_TEST(e2e_redact_rejected_with_tree);
     RUN_TEST(e2e_count_outline_agrees_with_pack);
 RUN_TEST(e2e_cctxpackignore_layered_on_gitignore);
     RUN_TEST(e2e_diff_outside_worktree);
+    RUN_TEST(e2e_outline_nobudget_keeps_refused_files);
+    RUN_TEST(e2e_find_matches_and_exit_codes);
     test_rm_rf("ctx_e2e_tmp");
 }
